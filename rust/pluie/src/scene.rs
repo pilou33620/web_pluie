@@ -225,7 +225,7 @@ pub fn decrire(s: &Scene, lat: f64, lon: f64, arome: Option<&Arome>, maintenant:
         "cumul": {"mm": r(cumul as f64, 1), "mm_haut": r(cumul_haut as f64, 1), "minutes": fin - debut},
         "grele_1h": r(ens.p_grele(debut, fin) as f64, 3),
         "trajet": trajet.map(|(v, cap)| json!({"vitesse_kmh": r(v, 0), "cap": r(cap, 0)})),
-        "reglage_auto": cal.n > 0,
+        "reglage_auto": cal.n >= 100, // en dessous, la correction reste négligeable (amortie par n / (n + 50))
         "mouvement": {"vitesse_kmh": r(u.hypot(v), 0), "direction": r((u.atan2(v).to_degrees() + 360.0) % 360.0, 0),
             "qualite": r(s.champ.qualite as f64, 2), "blocs": s.champ.blocs, "tendance_db_h": r((tendance * 60.0) as f64, 1)},
         "vecteurs": vecteurs,
