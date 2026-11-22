@@ -4,7 +4,7 @@
 //! est la part des membres mouillés. Au-delà de 20 min, elle se mélange à celle d'AROME (part des
 //! points voisins où le modèle fait pleuvoir), dont le poids grandit avec l'échéance.
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::mouvement::Champ;
 use crate::radar::{mm_h, Grille, SANS, SEUIL_DBZ};
@@ -164,6 +164,19 @@ pub fn arome_de(v: &Value) -> Option<Arome> {
     Some(Arome { fins: fins?, points })
 }
 
+/// Le ciel au point (le point central de la réponse) : code du temps (WMO), nébulosité (%), jour,
+/// température, lever et coucher du soleil (secondes). Pour le fond d'écran de la page.
+pub fn ciel_de(v: &Value) -> Option<Value> {
+    let centre = match v {
+        Value::Array(a) => a.get(a.len() / 2)?,
+        o => o,
+    };
+    let c = centre.get("current")?;
+    let jour = |k: &str| centre.pointer(&format!("/daily/{k}/0")).cloned().unwrap_or(Value::Null);
+    Some(json!({"code": c.get("weather_code"), "nuages": c.get("cloud_cover"), "jour": c.get("is_day").and_then(Value::as_i64).map(|j| j == 1),
+        "temperature": c.get("temperature_2m"), "lever": jour("sunrise"), "coucher": jour("sunset")}))
+}
+
 impl Arome {
     fn pas(&self, t: i64) -> Option<usize> {
         self.fins.iter().position(|&f| t <= f && t > f - 900)
@@ -239,7 +252,6 @@ pub fn serie(ens: &Ensemble, arome: Option<&Arome>, t0: i64, maintenant: i64) ->
 mod essais {
     use super::*;
     use crate::radar::N;
-    use serde_json::json;
 
     /// Pluie à 30 dBZ à l'ouest de x = 300, rien à l'est.
     fn front() -> Grille {
@@ -315,6 +327,12 @@ mod essais {
         assert_eq!(a.p_cumul(t0 + 60, t0 + 3000), Some(1.0));
         assert_eq!(arome_de(&json!([{"minutely_15": {"time": [1, 2], "precipitation": [null, null]}}])), None);
         assert_eq!(arome_de(&json!({"erreur": true})), None);
+        // le ciel vient du point central (le 5e des 9)
+        let mut r = reponse_arome(t0);
+        r[4]["current"] = json!({"weather_code": 3, "cloud_cover": 100, "is_day": 1, "temperature_2m": 13.7});
+        r[4]["daily"] = json!({"sunrise": [t0 - 3600], "sunset": [t0 + 30000]});
+        assert_eq!(ciel_de(&r), Some(json!({"code": 3, "nuages": 100, "jour": true, "temperature": 13.7, "lever": t0 - 3600, "coucher": t0 + 30000})));
+        assert_eq!(ciel_de(&reponse_arome(t0)), None);
         assert_eq!(poids_radar(10.0), 1.0);
         assert_eq!(poids_radar(80.0), 0.5);
         assert_eq!(melanger(0.2, Some(1.0), 80.0), 0.6);

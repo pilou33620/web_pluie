@@ -122,7 +122,10 @@ fn r(x: f64, n: i32) -> f64 {
 /// La prévision du point (lat, lon) pour la page.
 pub fn prevision(lat: f64, lon: f64, maintenant: i64) -> Res<Value> {
     let s = scene(Domaine::autour(lat, lon))?;
-    Ok(decrire(&s, lat, lon, sources::arome(lat, lon).as_ref(), maintenant))
+    let om = sources::autour(lat, lon);
+    let mut j = decrire(&s, lat, lon, om.as_deref().and_then(prevision::arome_de).as_ref(), maintenant);
+    j["ciel"] = om.as_deref().and_then(prevision::ciel_de).unwrap_or(Value::Null);
+    Ok(j)
 }
 
 /// La prévision d'un point d'une scène, en JSON ; elle attend ensuite sa vérification (journal).

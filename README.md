@@ -3,7 +3,13 @@
 Carte radar des précipitations et **probabilité qu'il pleuve sur votre position GPS**, de 5 min à 1 h.
 Pensée pour le téléphone. Inspirée de [web_weather](https://github.com/pilou33620/web_weather), dont elle reprend le serveur.
 
+- **Fond d'écran qui suit la météo** (repris du « Paysage » de tooth_dentaire) : ciel selon l'heure (aube, jour, crépuscule, nuit,
+  d'après le lever et le coucher du soleil) et le temps (dégagé, nuageux, couvert, brouillard, pluie, neige, orage), soleil ou lune,
+  nuages qui dérivent, maison aux fenêtres allumées ; pluie, neige ou étoiles animées, éclairs par orage. La pluie et la neige
+  viennent du radar sur votre position, la nébulosité et la température d'AROME. Animations coupées si le système demande moins de mouvement.
+- **Température et temps actuel** en grand, sur le ciel.
 - **Phrase de synthèse** : « Pluie probable dans ~20 min (70 %) », « Il pleut sur vous, fin probable dans ~15 min »…
+- **Trois tuiles** : risque de pluie d'ici 15 min, 30 min et 1 h.
 - **Courbe 5 → 60 min** : probabilité à chaque minute, et probabilité d'avoir de la pluie au moins une fois d'ici là ;
   intensité attendue (mm/h) dans un second graphique ; tableau des valeurs.
 - **Carte** : les 2 dernières heures de radar puis la pluie prévue jusqu'à +1 h, avec un curseur et la lecture animée ;
@@ -23,7 +29,7 @@ RainViewer ne fournit plus de prévision radar depuis 2026 : tout est calculé i
 | Advection | `mouvement.rs` | Semi-lagrangienne : pour savoir ce qui sera en un point dans t minutes, on remonte la trajectoire de t minutes (méthode du point milieu) et on lit l'image actuelle. Sert aux images de prévision de la carte. |
 | Suivi de cellules | `cellules.rs` | Les averses à 35 dBZ ou plus sont repérées comme objets (composantes connexes), appariées d'une image à l'autre et suivies. Une cellule suivie sur 3 images ou plus impose sa vitesse propre au champ autour d'elle. |
 | Ensemble | `prevision.rs` | 40 membres : vitesse perturbée (±15 %), croissance ou déclin tirés autour de la tendance mesurée, décalage qui grandit avec l'échéance (1 km + 0,1 km/min). Chacun remonte minute par minute la trajectoire qui arrive sur vous. La probabilité est la part des membres mouillés. |
-| AROME | `prevision.rs`, `sources.rs` | Part des 9 points voisins (~10 km) où AROME HD fait pleuvoir, au pas de 15 min. Mélangée au radar à partir de 20 min d'échéance, avec un poids qui grandit jusqu'à la moitié vers 80 min. |
+| AROME | `prevision.rs`, `sources.rs` | Part des 9 points voisins (~10 km) où AROME (France, 2,5 km) fait pleuvoir, au pas de 15 min. Mélangée au radar à partir de 20 min d'échéance, avec un poids qui grandit jusqu'à la moitié vers 80 min. |
 | Vérification | `journal.rs` | Chaque prévision est confrontée au radar observé ensuite sur le même point (`donnees/verification.jsonl`). `pluie --bilan` (ou `bin/pluie --bilan`) imprime le score de Brier par échéance, pour le mélange, le radar seul, AROME seul et la persistance, avec la détection et les fausses alertes. |
 
 Les incertitudes et les poids de l'ensemble sont réglés à la main pour l'instant : le bilan de fiabilité sert à les ajuster.
@@ -35,7 +41,7 @@ Le navigateur ne parle qu'au serveur, qui relaie et garde en cache :
 | Source | Usage | Cache |
 |---|---|---|
 | [RainViewer](https://www.rainviewer.com) (usage personnel) | radar de pluie, 2 h passées toutes les 10 min, zoom 7 au plus, 100 requêtes par minute au plus | liste 2 min, tuiles 2 h |
-| [Open-Meteo](https://open-meteo.com) (CC BY 4.0) | AROME HD au pas de 15 min, 9 points autour de vous | 15 min |
+| [Open-Meteo](https://open-meteo.com) (CC BY 4.0) | AROME au pas de 15 min sur 9 points autour de vous, et le ciel actuel (nébulosité, température, lever et coucher du soleil) pour le fond d'écran, en un seul appel | 15 min |
 | [OpenStreetMap](https://www.openstreetmap.org/copyright) | fond de carte | disque, 7 jours (`cache/`) |
 
 ## Installation
@@ -91,10 +97,11 @@ par git. Le journal contient les positions arrondies au centième de degré (~1 
 
 ```sh
 cargo test --release -p pluie
+node test/paysage.test.js   # fond d'écran : moment de la journée, temps choisi, décor
 ```
 
 Sans réseau : décodage d'une vraie tuile RainViewer, flux optique et advection sur une pluie synthétique au mouvement connu,
-suivi de cellules, ensemble (front qui arrive, pluie qui faiblit), AROME, journal et bilan, et le serveur de bout en bout (fichiers
+suivi de cellules, ensemble (front qui arrive, pluie qui faiblit), AROME et ciel, journal et bilan, et le serveur de bout en bout (fichiers
 servis et refusés, Host étranger, prévision complète sur de fausses sources). Le Raspberry Pi ne compile pas : la CI GitHub
 (`ci.yml`) lance les essais, `binaires.yml` publie les exécutables.
 

@@ -1,47 +1,74 @@
-/* web_pluie : thème clair façon iOS, comme web_weather. */
+/* web_pluie : paysage qui suit la météo en fond (js/paysage.js), cartes de verre dépoli par-dessus. */
 :root {
-  --bg:#ffffff; --card:#f2f2f6; --line:#e3e3e8; --text:#111114; --muted:#6e6e73; --accent:#0a84ff;
+  --text:#1d1d1f; --muted:#6b6b70; --line:rgba(60,60,67,.14); --accent:#0a84ff;
   --s1:#2a78d6; --s2:#eb6834; --grille:#e6e6ea;
-  --verre:rgba(255,255,255,.86); --ombre:0 8px 30px rgba(0,0,0,.12); --r:18px;
+  --verre:rgba(255,255,255,.9); --ombre:0 10px 30px rgba(0,0,0,.16); --r:22px;
 }
 * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
 [hidden] { display:none !important; }
-html, body { margin:0; height:100%; background:var(--bg); color:var(--text);
+html, body { margin:0; min-height:100%; background:#3f95d1; color:var(--text);
   font:16px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif; }
 a { color:var(--accent); }
 button, input, select { font:inherit; color:inherit; }
 button { cursor:pointer; }
 :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
-.muted { color:var(--muted); }
 
-#appli { display:flex; flex-direction:column; min-height:100%; }
-#zone-carte { position:relative; height:52vh; min-height:280px; }
-#carte { position:absolute; inset:0; background:#dfe6ee; }
-#panneau { padding:16px 16px calc(24px + env(safe-area-inset-bottom)); max-width:640px; width:100%; margin:0 auto; }
-@media (min-width: 900px) {
-  #appli { flex-direction:row; height:100%; }
-  #zone-carte { flex:1; height:auto; }
-  #panneau { width:420px; flex:none; overflow-y:auto; margin:0; }
+/* --- Fond : paysage, particules, éclair, voile qui garde le texte blanc lisible --- */
+#fond { position:fixed; inset:0; z-index:0; overflow:hidden; pointer-events:none; }
+#paysage, #paysage svg, #particules, .eclair, .voile { position:absolute; inset:0; width:100%; height:100%; display:block; }
+.voile { background:linear-gradient(rgba(0,0,0,.30), rgba(0,0,0,.06) 40%, rgba(0,0,0,0) 60%); }
+html:is([data-meteo="neige"], [data-meteo="brouillard"]) .voile { background:linear-gradient(rgba(20,30,45,.5), rgba(20,30,45,.15) 45%, rgba(0,0,0,0) 65%); }
+.eclair { opacity:0; background:radial-gradient(ellipse at 30% 0%, rgba(235,240,255,.85), rgba(200,210,255,.25) 45%, transparent 75%); }
+html[data-meteo="orage"] .eclair { animation:eclair 11s linear infinite; }
+@keyframes eclair { 0%, 61%, 63.5%, 66%, 100% { opacity:0; } 62% { opacity:.9; } 64.5% { opacity:.6; } 65% { opacity:1; } }
+.p-derive { animation:derive linear infinite; }
+@keyframes derive { from { transform:translateX(-300px); } to { transform:translateX(1500px); } }
+.p-etoiles { animation:scintille 4s ease-in-out infinite alternate; }
+@keyframes scintille { from { opacity:.55; } to { opacity:1; } }
+.p-soleil { animation:halo 10s ease-in-out infinite alternate; }
+@keyframes halo { to { opacity:.85; } }
+.p-allumee { filter:drop-shadow(0 0 6px rgba(255,200,100,.9)); }
+@media (prefers-reduced-motion: reduce) { .p-derive, .p-etoiles, .p-soleil, html[data-meteo="orage"] .eclair { animation:none; } }
+
+/* --- Mise en page : une colonne sur téléphone, la carte à droite sur grand écran --- */
+#appli { position:relative; z-index:1; max-width:640px; margin:0 auto;
+  padding:calc(18px + env(safe-area-inset-top)) 14px calc(24px + env(safe-area-inset-bottom));
+  display:flex; flex-direction:column; gap:14px; }
+@media (min-width: 960px) {
+  #appli { max-width:1280px; display:grid; grid-template-columns:440px 1fr; align-items:start; column-gap:20px; padding:24px; }
+  #appli > * { grid-column:1; }
+  #zone-carte { grid-column:2; grid-row:1 / span 12; position:sticky; top:24px; }
+  #carte { height:calc(100vh - 150px); }
 }
 
-.pilule { position:absolute; z-index:1000; top:calc(10px + env(safe-area-inset-top)); left:50%; transform:translateX(-50%);
-  max-width:calc(100% - 20px); padding:7px 14px; border-radius:20px; background:var(--verre); box-shadow:var(--ombre);
-  font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px); }
-.lecteur { position:absolute; z-index:1000; left:10px; right:10px; bottom:10px; display:flex; align-items:center; gap:10px;
-  padding:8px 12px; border-radius:22px; background:var(--verre); box-shadow:var(--ombre); backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px); }
-.lecteur button { width:36px; height:36px; border-radius:50%; border:0; background:var(--s1); color:#fff; flex:none; }
-.lecteur input { flex:1; min-width:0; accent-color:var(--s1); }
-#curseur-t { font-size:14px; min-width:92px; text-align:right; font-variant-numeric:tabular-nums; }
+.verre { background:var(--verre); border:1px solid rgba(255,255,255,.65); border-radius:var(--r); box-shadow:var(--ombre);
+  backdrop-filter:blur(16px) saturate(1.2); -webkit-backdrop-filter:blur(16px) saturate(1.2); }
 
-#resume { margin-bottom:12px; }
-#phrase { margin:0; font-size:21px; font-weight:600; line-height:1.25; }
-#detail { margin:6px 0 0; font-size:14px; }
-.carte-msg { background:var(--card); border-radius:var(--r); padding:14px 16px; margin-bottom:14px; }
+/* --- En-tête sur le ciel --- */
+.hero { color:#fff; text-shadow:0 1px 14px rgba(0,0,0,.35); padding:6px 6px 10px; }
+.ciel { display:flex; align-items:baseline; gap:12px; min-height:24px; }
+#ciel-temp { font-size:64px; font-weight:200; line-height:1; letter-spacing:-2px; }
+#ciel-temp:empty { display:none; }
+#ciel-libelle { font-size:18px; font-weight:500; opacity:.95; }
+#phrase { margin:14px 0 0; font-size:30px; font-weight:700; line-height:1.15; }
+#detail { margin:8px 0 0; font-size:15px; opacity:.95; }
+#detail:empty { display:none; }
+
+.carte-msg { padding:14px 16px; }
 .carte-msg p { margin:0 0 10px; }
 .carte-msg button, .reglages select { border:1px solid var(--line); background:#fff; border-radius:10px; padding:6px 12px; }
 
-.graphe { position:relative; margin:0 0 14px; background:var(--card); border-radius:var(--r); padding:12px 12px 8px; }
-.graphe figcaption { font-weight:600; font-size:15px; margin-bottom:6px; }
+/* --- Tuiles : risque d'ici 15 min, 30 min, 1 h --- */
+.tuiles { display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; }
+.tuile { padding:12px 12px 14px; display:flex; flex-direction:column; gap:4px; }
+.t-lib { font-size:13px; color:var(--muted); }
+.t-val { font-size:28px; font-weight:700; font-variant-numeric:tabular-nums; }
+.jauge { height:6px; border-radius:3px; background:#ececf0; overflow:hidden; }
+.jauge i { display:block; height:100%; width:0; border-radius:3px; background:var(--s2); transition:width .6s ease; }
+
+/* --- Graphiques --- */
+.graphe { position:relative; margin:0; padding:14px 14px 10px; }
+.graphe figcaption { font-weight:600; font-size:16px; margin-bottom:6px; }
 .graphe svg { display:block; width:100%; touch-action:pan-y; }
 #courbe { height:190px; }
 #barres { height:84px; }
@@ -55,16 +82,26 @@ svg .grille { stroke:var(--grille); stroke-width:1; }
 .bulle b { font-weight:600; }
 .bulle i { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--c); margin-right:5px; }
 
-details { background:var(--card); border-radius:var(--r); padding:10px 14px; margin-bottom:14px; font-size:14px; }
+/* --- Carte --- */
+#zone-carte { overflow:hidden; }
+.carte-tete { padding:10px 14px; font-size:14px; font-weight:500; color:var(--muted); }
+#carte { height:330px; background:#dfe6ee; }
+.lecteur { display:flex; align-items:center; gap:10px; padding:10px 12px; }
+.lecteur button { width:38px; height:38px; border-radius:50%; border:0; background:var(--s1); color:#fff; flex:none; }
+.lecteur input { flex:1; min-width:0; accent-color:var(--s1); }
+#curseur-t { font-size:14px; min-width:92px; text-align:right; font-variant-numeric:tabular-nums; }
+.leaflet-container { font:inherit; }
+
+/* --- Tableau, réglages, sources --- */
+details { padding:12px 16px; font-size:14px; }
 summary { cursor:pointer; font-weight:600; }
 table { width:100%; border-collapse:collapse; margin-top:8px; font-variant-numeric:tabular-nums; }
 th, td { text-align:right; padding:4px 3px; border-bottom:1px solid var(--line); }
 th:first-child, td:first-child { text-align:left; }
 th { font-weight:600; color:var(--muted); font-size:12px; }
-
-.reglages { display:flex; flex-direction:column; gap:10px; background:var(--card); border-radius:var(--r); padding:14px 16px; margin-bottom:14px; }
+.reglages { display:flex; flex-direction:column; gap:10px; padding:14px 16px; }
 .reglages label { display:flex; align-items:center; gap:8px; }
 .reglages input[type=checkbox] { width:20px; height:20px; accent-color:var(--s1); }
 .reglages .seuil { padding-left:28px; font-size:14px; color:var(--muted); }
-.sources { font-size:12px; color:var(--muted); }
-.leaflet-container { font:inherit; }
+.sources { margin:0; padding:0 6px; font-size:12px; color:#fff; text-shadow:0 1px 6px rgba(0,0,0,.5); }
+.sources a { color:#fff; }

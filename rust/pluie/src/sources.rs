@@ -1,7 +1,7 @@
 //! Les sources externes, relayées et gardées en cache (repris de web_weather) :
 //!   - RainViewer (images radar des 2 dernières heures, toutes les 10 min) ;
 //!   - les tuiles OpenStreetMap (fond de carte, cache disque) ;
-//!   - Open-Meteo (AROME HD au pas de 15 min, autour du point).
+//!   - Open-Meteo (AROME au pas de 15 min autour du point, et le ciel actuel pour le fond d'écran).
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -13,7 +13,6 @@ use std::time::{Duration, Instant, SystemTime};
 use serde_json::{json, Map, Value};
 use web_tools_commun::serveur::{encoder_url, params};
 
-use crate::prevision::{arome_de, Arome};
 use crate::radar::ZOOM;
 
 pub const AGENT: &str = "web_pluie/1.0 (+https://github.com/pilou33620/web_pluie)";
@@ -272,11 +271,12 @@ pub fn tuile_osm(z: u32, x: u64, y: u64) -> Res<Option<Arc<Vec<u8>>>> {
     Ok(Some(Arc::new(corps)))
 }
 
-// --- AROME --------------------------------------------------------------------------
+// --- Open-Meteo autour du point ----------------------------------------------------
 
-/// AROME HD au pas de 15 min sur 9 points autour du lieu (~10 km), gardé 15 min (le modèle
-/// tourne toutes les heures). None hors de France ou si Open-Meteo ne répond pas : le radar suffit.
-pub fn arome(lat: f64, lon: f64) -> Option<Arome> {
+/// AROME (France, 2,5 km) sur 9 points autour du lieu (~10 km) : pluie au pas de 15 min, et pour le
+/// fond d'écran le ciel actuel (code du temps, nébulosité, jour, température, lever et coucher du
+/// soleil). Gardé 15 min (le modèle tourne toutes les heures). None si Open-Meteo ne répond pas.
+pub fn autour(lat: f64, lon: f64) -> Option<Arc<Value>> {
     let (lat, lon) = (arrondi((lat / 0.05).round() * 0.05, 2), arrondi((lon / 0.05).round() * 0.05, 2));
     let mut las = Vec::new();
     let mut los = Vec::new();
@@ -287,12 +287,13 @@ pub fn arome(lat: f64, lon: f64) -> Option<Arome> {
         }
     }
     let (las, los) = (las.join(","), los.join(","));
-    let v = json_en_cache(&format!("arome|{lat}|{lon}"), 900, || {
-        json_de(OM, &[("latitude", las.as_str()), ("longitude", los.as_str()), ("minutely_15", "precipitation"), ("models", "meteofrance_arome_france_hd"),
-            ("forecast_minutely_15", "8"), ("past_minutely_15", "1"), ("timeformat", "unixtime")])
+    json_en_cache(&format!("autour|{lat}|{lon}"), 900, || {
+        json_de(OM, &[("latitude", las.as_str()), ("longitude", los.as_str()), ("models", "meteofrance_arome_france"),
+            ("minutely_15", "precipitation"), ("forecast_minutely_15", "8"), ("past_minutely_15", "1"),
+            ("current", "weather_code,cloud_cover,is_day,temperature_2m"), ("daily", "sunrise,sunset"), ("forecast_days", "1"),
+            ("timezone", "auto"), ("timeformat", "unixtime")])
     })
-    .ok()?;
-    arome_de(&v)
+    .ok()
 }
 
 #[cfg(test)]

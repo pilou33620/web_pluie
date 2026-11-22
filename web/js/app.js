@@ -1,10 +1,11 @@
-// web_pluie : la page. Position GPS → /api/prevision toutes les 2 min → phrase, courbes, tableau,
-// carte (radar passé, pluie prévue, flèches de déplacement, averses suivies), notifications.
+// web_pluie : la page. Position GPS → /api/prevision toutes les 2 min → phrase, tuiles, courbes,
+// tableau, carte (radar passé, pluie prévue, flèches, averses suivies), notifications ; le fond
+// d'écran suit le temps qu'il fait (js/paysage.js).
 'use strict';
 (() => {
   const $ = s => document.querySelector(s);
   const NS = 'http://www.w3.org/2000/svg';
-  const C1 = '#2a78d6', C2 = '#eb6834', FOND = '#f2f2f6'; // séries (palette validée) et fond des cartes
+  const C1 = '#2a78d6', C2 = '#eb6834', FOND = '#ffffff'; // séries (palette validée) et fond des cartes
   const RAFRAICHIR = 120000;
   const K0 = 5, K1 = 60; // fenêtre affichée : de +5 min à +1 h
   const MARGES = { g: 40, d: 42 }; // communes aux deux graphiques : les colonnes tombent sous la courbe
@@ -157,8 +158,9 @@
     $('#sans-gps-texte').textContent = msg;
     $('#phrase').textContent = 'Position inconnue';
     $('#detail').textContent = 'La carte radar reste affichée ; la probabilité sur vous attend votre position.';
-    for (const s of ['#fig-p', '#fig-i', '#tableau-bloc']) $(s).hidden = true;
+    for (const s of ['#tuiles', '#fig-p', '#fig-i', '#tableau-bloc']) $(s).hidden = true;
     majEtat();
+    majCiel();
   }
 
   function suivreGps() {
@@ -204,6 +206,15 @@
     }
     majCurseur();
     majEtat();
+    majCiel();
+  }
+
+  /** Le fond d'écran, la température et le temps qu'il fait sur le point. */
+  function majCiel() {
+    const d = Paysage.appliquer(etat.prev, Date.now() / 1000);
+    const c = etat.prev && etat.prev.ciel;
+    $('#ciel-temp').textContent = c && c.temperature != null ? `${Math.round(c.temperature)}°` : '';
+    $('#ciel-libelle').textContent = etat.prev ? Paysage.LIBELLES[d.meteo] : '';
   }
 
   function majEtat() {
@@ -238,8 +249,13 @@
     const deplacement = mv.blocs > 0 ? `pluie qui va vers ${versDir(mv.direction)} à ${mv.vitesse_kmh} km/h` : 'aucune pluie à suivre autour de vous';
     $('#detail').textContent = [suite, deplacement, p.arome ? 'radar + AROME' : 'radar seul'].filter(Boolean).join(' · ');
     const avecSerie = p.serie.length > K0;
-    $('#fig-p').hidden = $('#tableau-bloc').hidden = !avecSerie;
+    $('#tuiles').hidden = $('#fig-p').hidden = $('#tableau-bloc').hidden = !avecSerie;
     if (avecSerie) {
+      for (const k of [15, 30, 60]) {
+        const m = p.serie[Math.min(k, p.serie.length - 1)];
+        $(`#t${k}`).textContent = pct(m.p_cumul);
+        $(`#j${k}`).style.width = `${Math.round(m.p_cumul * 100)}%`;
+      }
       dessinerCourbe(p.serie);
       dessinerBarres(p.serie);
       remplirTableau(p.serie);

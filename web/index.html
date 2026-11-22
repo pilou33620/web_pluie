@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#ffffff">
+<meta name="theme-color" content="#3f95d1">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Pluie">
 <link rel="manifest" href="manifest.json">
@@ -13,10 +13,43 @@
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
+<div id="fond" aria-hidden="true">
+  <div id="paysage"></div>
+  <canvas id="particules"></canvas>
+  <div class="eclair"></div>
+  <div class="voile"></div>
+</div>
 <div id="appli">
-  <section id="zone-carte" aria-label="Carte des précipitations">
+  <header class="hero">
+    <div class="ciel"><span id="ciel-temp"></span><span id="ciel-libelle"></span></div>
+    <p id="phrase" role="status" aria-live="polite">Recherche de votre position…</p>
+    <p id="detail"></p>
+  </header>
+
+  <div id="sans-gps" class="verre carte-msg" hidden>
+    <p id="sans-gps-texte"></p>
+    <button id="b-gps">Réessayer</button>
+  </div>
+
+  <section id="tuiles" class="tuiles" aria-label="Risque de pluie" hidden>
+    <div class="verre tuile"><span class="t-lib">d'ici 15 min</span><span class="t-val" id="t15">—</span><span class="jauge"><i id="j15"></i></span></div>
+    <div class="verre tuile"><span class="t-lib">d'ici 30 min</span><span class="t-val" id="t30">—</span><span class="jauge"><i id="j30"></i></span></div>
+    <div class="verre tuile"><span class="t-lib">d'ici 1 h</span><span class="t-val" id="t60">—</span><span class="jauge"><i id="j60"></i></span></div>
+  </section>
+
+  <figure id="fig-p" class="verre graphe" hidden>
+    <figcaption>Les 60 prochaines minutes</figcaption>
+    <div class="legende">
+      <span><i class="cle" style="--c:var(--s1)"></i>pluie à cette minute</span>
+      <span><i class="cle" style="--c:var(--s2)"></i>pluie au moins une fois d'ici là</span>
+    </div>
+    <svg id="courbe" role="img" aria-label="Courbe de probabilité de pluie de 5 à 60 minutes"></svg>
+    <div id="bulle" class="bulle" hidden></div>
+  </figure>
+
+  <section id="zone-carte" class="verre" aria-label="Carte des précipitations">
+    <div class="carte-tete"><span id="etat">Chargement du radar…</span></div>
     <div id="carte"></div>
-    <div class="pilule" id="etat" role="status">Chargement…</div>
     <div class="lecteur">
       <button id="play" aria-label="Lecture">▶</button>
       <input type="range" id="curseur" min="0" max="0" value="0" aria-label="Heure de l'image">
@@ -24,54 +57,35 @@
     </div>
   </section>
 
-  <main id="panneau">
-    <div id="resume" role="status" aria-live="polite">
-      <p id="phrase">Recherche de votre position…</p>
-      <p id="detail" class="muted"></p>
-    </div>
-    <div id="sans-gps" class="carte-msg" hidden>
-      <p id="sans-gps-texte"></p>
-      <button id="b-gps">Réessayer</button>
-    </div>
+  <figure id="fig-i" class="verre graphe" hidden>
+    <figcaption>Intensité attendue si la pluie tombe</figcaption>
+    <svg id="barres" role="img" aria-label="Intensité de pluie attendue, en millimètres par heure"></svg>
+  </figure>
+  <details id="tableau-bloc" class="verre" hidden>
+    <summary>Tableau des valeurs</summary>
+    <table id="tableau">
+      <thead><tr><th>Dans</th><th>À cette minute</th><th>D'ici là</th><th>Intensité</th><th>Radar</th><th>AROME</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </details>
 
-    <figure id="fig-p" class="graphe" hidden>
-      <figcaption>Probabilité de pluie sur votre position</figcaption>
-      <div class="legende">
-        <span><i class="cle" style="--c:var(--s1)"></i>à cette minute</span>
-        <span><i class="cle" style="--c:var(--s2)"></i>d'ici là (au moins une fois)</span>
-      </div>
-      <svg id="courbe" role="img" aria-label="Courbe de probabilité de pluie de 5 à 60 minutes"></svg>
-      <div id="bulle" class="bulle" hidden></div>
-    </figure>
-    <figure id="fig-i" class="graphe" hidden>
-      <figcaption>Intensité attendue si la pluie tombe</figcaption>
-      <svg id="barres" role="img" aria-label="Intensité de pluie attendue, en millimètres par heure"></svg>
-    </figure>
-    <details id="tableau-bloc" hidden>
-      <summary>Tableau des valeurs</summary>
-      <table id="tableau">
-        <thead><tr><th>Dans</th><th>À cette minute</th><th>D'ici là</th><th>Intensité</th><th>Radar</th><th>AROME</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </details>
-
-    <div class="reglages">
-      <label><input type="checkbox" id="o-fleches"> Flèches de déplacement</label>
-      <label><input type="checkbox" id="o-cellules" checked> Averses fortes suivies</label>
-      <label><input type="checkbox" id="o-notifs"> Me prévenir quand la pluie arrive</label>
-      <label class="seuil">dès
-        <select id="o-seuil" aria-label="Seuil de probabilité">
-          <option value="0.3">30 %</option><option value="0.5" selected>50 %</option><option value="0.7">70 %</option><option value="0.9">90 %</option>
-        </select>
-        de risque d'ici 30 min
-      </label>
-    </div>
-    <p class="sources">Radar <a href="https://www.rainviewer.com">RainViewer</a> · prévision AROME <a href="https://open-meteo.com">Open-Meteo</a> ·
-      fond <a href="https://www.openstreetmap.org/copyright">© OpenStreetMap</a>. Probabilités calculées ici, à partir des images radar :
-      une estimation, pas une prévision officielle.</p>
-  </main>
+  <section class="verre reglages" aria-label="Réglages">
+    <label><input type="checkbox" id="o-fleches"> Flèches de déplacement sur la carte</label>
+    <label><input type="checkbox" id="o-cellules" checked> Averses fortes suivies</label>
+    <label><input type="checkbox" id="o-notifs"> Me prévenir quand la pluie arrive</label>
+    <label class="seuil">dès
+      <select id="o-seuil" aria-label="Seuil de probabilité">
+        <option value="0.3">30 %</option><option value="0.5" selected>50 %</option><option value="0.7">70 %</option><option value="0.9">90 %</option>
+      </select>
+      de risque d'ici 30 min
+    </label>
+  </section>
+  <p class="sources">Radar <a href="https://www.rainviewer.com">RainViewer</a> · AROME et ciel <a href="https://open-meteo.com">Open-Meteo</a> ·
+    fond de carte <a href="https://www.openstreetmap.org/copyright">© OpenStreetMap</a>. Probabilités calculées ici à partir des images
+    radar : une estimation, pas une prévision officielle.</p>
 </div>
 <script src="vendor/leaflet/leaflet.js"></script>
+<script src="js/paysage.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

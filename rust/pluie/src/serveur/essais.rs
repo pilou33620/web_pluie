@@ -54,9 +54,10 @@ fn faux(url: &str) -> Result<Vec<u8>, Erreur> {
         return Ok(b"PNG-OSM".to_vec());
     }
     if url.starts_with(OM) {
-        assert!(url.contains("models=meteofrance_arome_france_hd") && url.contains("minutely_15=precipitation"), "{url}");
+        assert!(url.contains("models=meteofrance_arome_france&") && url.contains("minutely_15=precipitation"), "{url}");
         let fins: Vec<i64> = (-1..8).map(|k| maintenant() / 900 * 900 + 900 * k).collect();
-        let lieu = json!({"minutely_15": {"time": fins, "precipitation": vec![0.0; 9]}});
+        let lieu = json!({"minutely_15": {"time": fins, "precipitation": vec![0.0; 9]},
+            "current": {"weather_code": 2, "cloud_cover": 40, "is_day": 1, "temperature_2m": 12.5}, "daily": {"sunrise": [1], "sunset": [2]}});
         return ok(Value::Array(vec![lieu; 9]));
     }
     Err(Erreur::Source("source.exemple injoignable".into()))
@@ -131,7 +132,7 @@ fn banc_serveur() {
 
     // --- Fichiers servis et refusés
     for (c, attendu) in [
-        ("/", 200), ("/index.html", 200), ("/sw.js", 200), ("/manifest.json", 200), ("/js/app.js", 200), ("/css/style.css", 200),
+        ("/", 200), ("/index.html", 200), ("/sw.js", 200), ("/manifest.json", 200), ("/js/app.js", 200), ("/js/paysage.js", 200), ("/css/style.css", 200),
         ("/css/icone.svg", 200), ("/vendor/leaflet/leaflet.js", 200), ("/vendor/leaflet/leaflet.css", 200), ("/favicon.ico", 204),
         ("/.git/config", 404), ("/.gitignore", 404), ("/Cargo.toml", 404), ("/rust/pluie/src/serveur.rs", 404), ("/README.md", 404),
         ("/web/index.html", 404), ("/js/", 404), ("/js/../Cargo.toml", 404), ("/js/%2e%2e/Cargo.toml", 404), ("/js/.cache.js", 404),
@@ -179,6 +180,8 @@ fn banc_serveur() {
     let p = r.json();
     assert_eq!(p["t0"], *T);
     assert_eq!(p["arome"], true);
+    assert_eq!(p["ciel"]["temperature"], 12.5);
+    assert_eq!(p["ciel"]["jour"], true);
     let serie = p["serie"].as_array().unwrap();
     assert_eq!(serie.len(), 61);
     // l'averse (bord à 30 pixels du point à l'heure T, 1 pixel par minute) arrive dans l'heure

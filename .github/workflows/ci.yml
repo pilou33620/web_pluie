@@ -13,5 +13,7 @@ jobs:
         shell: bash
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
+      - name: Fond d'écran (moment, temps, décor)
+        run: node test/paysage.test.js
       - name: Interface (syntaxe)
-        run: for f in web/sw.js web/js/*.js; do node --check "$f" || exit 1; done
+        run: for f in web/sw.js web/js/*.js test/*.js; do node --check "$f" || exit 1; done
