@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["rust/pluie"]
+
+[profile.release]
+opt-level = 3
+strip = true
+
+[profile.dev]
+opt-level = 1
+
+# les essais (cargo test) calculent des prévisions sur des grilles entières : optimisés même en dev
+[profile.test]
+opt-level = 3

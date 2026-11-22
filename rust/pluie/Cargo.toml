@@ -1,0 +1,17 @@
+[package]
+name = "pluie"
+version = "0.1.0"
+edition = "2021"
+description = "web_pluie : carte radar des précipitations et probabilité de pluie sur sa position, de 5 min à 1 h"
+
+[lib]
+doctest = false
+
+[dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }
+# Serveur HTTP/HTTPS, appairage et mise à jour sans git (feature production) : communs aux web tools (dépôt web_suite)
+web_tools_commun = { git = "https://github.com/pilou33620/web_suite", rev = "a9d9d90638718302b92ee862bbd415c16bb218fc", features = ["production"] }
+# Requêtes sortantes (RainViewer, OSM, Open-Meteo) : rustls et racines webpki-roots
+ureq = "2"
+# Décoder les tuiles radar en intensités, encoder les images de prévision (pur Rust)
+png = "0.17"

@@ -1,0 +1,17 @@
+name: bancs d'essai
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  essais:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # radar (tuile réelle), flux optique, cellules, ensemble, AROME, journal, serveur de bout en bout (sans réseau)
+      - name: Moteur et serveur (Rust)
+        run: cargo test --release -p pluie 2>&1 | tail -40; exit ${PIPESTATUS[0]}
+        shell: bash
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Interface (syntaxe)
+        run: for f in web/sw.js web/js/*.js; do node --check "$f" || exit 1; done

@@ -1,0 +1,102 @@
+name: exécutables
+
+# Compile l'exécutable de web_pluie pour chaque système et le dépose dans la publication « binaires »,
+# en deux archives par système (.tar.gz, .zip sous Windows), chacune avec son empreinte SHA-256 :
+# - pluie-<système> : l'exécutable seul, que scripts/binaires.sh et scripts/binaires.cmd prennent sur
+#   un clone git sans cargo (Raspberry Pi, PC sans Rust) ;
+# - pluie-prod-<système> : la production, sans git ni sources — l'exécutable, les scripts de démarrage
+#   et la page. Ni bancs, ni tests, ni données : une mise à jour ne les touche jamais.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  compiler:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # musl : exécutables statiques, indépendants de la glibc du poste (Raspberry Pi OS)
+          - { os: ubuntu-latest, cible: x86_64-unknown-linux-musl, nom: linux-x86_64 }
+          - { os: ubuntu-24.04-arm, cible: aarch64-unknown-linux-musl, nom: linux-aarch64 }
+          - { os: macos-latest, cible: aarch64-apple-darwin, nom: macos-aarch64 }
+          - { os: windows-latest, cible: x86_64-pc-windows-msvc, nom: windows-x86_64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: rustup target add ${{ matrix.cible }}
+
+      - if: contains(matrix.cible, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - run: cargo build --release -p pluie --bins --target ${{ matrix.cible }}
+
+      - name: Archive (les exécutables et le commit dont ils viennent)
+        shell: bash
+        run: |
+          mkdir bin
+          cd target/${{ matrix.cible }}/release
+          if [ "${{ runner.os }}" = Windows ]; then
+            cp ./*.exe ../../../bin/
+          else
+            find . -maxdepth 1 -type f -perm -u+x -exec cp {} ../../../bin/ \;
+          fi
+          cd ../../..
+          git rev-parse HEAD > bin/commit
+          if [ "${{ runner.os }}" = Windows ]; then
+            (cd bin && 7z a ../pluie-${{ matrix.nom }}.zip .)
+          else
+            tar -czf pluie-${{ matrix.nom }}.tar.gz -C bin .
+          fi
+
+      - name: Archive de production (exécutable, scripts de démarrage, page)
+        shell: bash
+        run: |
+          P=prod/pluie
+          mkdir -p $P
+          cp -r bin scripts web demarrer_WEB_PLUIE.sh demarrer_WEB_PLUIE.cmd README.md $P/
+          if [ "${{ runner.os }}" = Windows ]; then
+            (cd prod && 7z a ../pluie-prod-${{ matrix.nom }}.zip pluie)
+          else
+            tar -czf pluie-prod-${{ matrix.nom }}.tar.gz -C prod pluie
+          fi
+
+      - name: Essai de l'archive de production (dossier vide, démarrage, réponse 200)
+        if: matrix.nom == 'linux-x86_64'
+        shell: bash
+        run: |
+          essai=$(mktemp -d)
+          tar -xzf pluie-prod-linux-x86_64.tar.gz -C "$essai"
+          cd "$essai/pluie"
+          sh demarrer_WEB_PLUIE.sh --sans-maj --local --sans-navigateur --sans-pause --port 8802 > journal.txt 2>&1 < /dev/null &
+          pid=$!
+          code=000
+          for i in $(seq 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8802/ || true)
+            [ "$code" = 200 ] && break
+            sleep 1
+          done
+          pkill -f "bin/pluie " || true
+          kill "$pid" 2>/dev/null || true
+          if [ "$code" != 200 ]; then cat journal.txt; echo "Réponse : $code"; exit 1; fi
+          echo "Archive de production : démarrée, réponse 200."
+
+      - name: Publication
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # les quatre compilations arrivent ensemble : une seule crée la publication
+          gh release view binaires >/dev/null 2>&1 \
+            || gh release create binaires --title "Exécutables" \
+                 --notes "Exécutables de web_pluie, recompilés à chaque envoi sur main. pluie-<système> : pris par scripts/binaires.sh et scripts/binaires.cmd. pluie-prod-<système> : la production complète (exécutable, scripts de démarrage, page), à décompresser puis lancer par demarrer_WEB_PLUIE." \
+            || true
+          for f in pluie-${{ matrix.nom }}.* pluie-prod-${{ matrix.nom }}.*; do
+            (sha256sum "$f" 2>/dev/null || shasum -a 256 "$f") | cut -d" " -f1 > "$f.sha256"
+          done
+          gh release upload binaires pluie-${{ matrix.nom }}.* pluie-prod-${{ matrix.nom }}.* --clobber

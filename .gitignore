@@ -1,0 +1,12 @@
+*.local.json
+journaux/
+cache/
+donnees/
+
+# Rust : compilation et exécutables (compilés ici ou téléchargés)
+/target/
+/bin/
+
+# copies de travail temporaires des agents
+/.claude/worktrees/
+.hidden

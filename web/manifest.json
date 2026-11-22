@@ -1,0 +1,10 @@
+{
+  "name": "web_pluie — pluie sur ma position",
+  "short_name": "Pluie",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "lang": "fr",
+  "icons": [{ "src": "css/icone.svg", "sizes": "any", "type": "image/svg+xml" }]
+}
