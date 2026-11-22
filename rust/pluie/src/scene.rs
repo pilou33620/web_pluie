@@ -6,11 +6,12 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
 
+use crate::calibration::Calibration;
 use crate::cellules::{self, Cellule};
 use crate::journal::{self, Attente, ECHEANCES};
 use crate::mouvement::{self, noeud, Champ};
-use crate::prevision::{self, Arome, HORIZON};
-use crate::radar::{self, Domaine, Grille, SANS};
+use crate::prevision::{self, Arome, HORIZON, SEUIL_GRELE};
+use crate::radar::{self, Domaine, Grille, SANS, TUILE};
 use crate::sources::{self, Erreur, Res};
 
 const IMAGES: usize = 4; // 30 min de mouvement
@@ -119,35 +120,67 @@ fn r(x: f64, n: i32) -> f64 {
     (x * f).round() / f
 }
 
-/// La prévision du point (lat, lon) pour la page.
-pub fn prevision(lat: f64, lon: f64, maintenant: i64) -> Res<Value> {
+/// Pluie tombée sur le point (mm) pendant les 2 heures d'images radar, chaque image valant 10 min.
+fn cumul_passe(lat: f64, lon: f64) -> Res<f64> {
+    let heures = sources::heures_radar()?;
+    let derniere = *heures.last().ok_or(Erreur::Format)?;
+    let (mx, my) = radar::monde_px(lat, lon);
+    let (tx, ty) = ((mx / TUILE as f64) as u64, (my / TUILE as f64) as u64);
+    let (px, py) = ((mx - (tx as usize * TUILE) as f64) as f32, (my - (ty as usize * TUILE) as f64) as f32);
+    let v = sources::json_en_cache(&format!("passe|{derniere}|{tx}|{ty}|{}|{}", px.floor(), py.floor()), 900, || {
+        let mut mm = 0.0;
+        for &t in &heures {
+            let o = sources::tuile_radar(t, radar::ZOOM, tx, ty)?.ok_or(Erreur::Format)?;
+            mm += radar::mm_h(radar::decoder_tuile(&o).map_err(|_| Erreur::Format)?.echantillon(px, py)) as f64 / 6.0;
+        }
+        Ok(json!(mm))
+    })?;
+    v.as_f64().ok_or(Erreur::Format)
+}
+
+/// La prévision du point (lat, lon) pour la page ; `trajet` : (km/h, cap) si l'on se déplace.
+pub fn prevision(lat: f64, lon: f64, maintenant: i64, trajet: Option<(f64, f64)>) -> Res<Value> {
     let s = scene(Domaine::autour(lat, lon))?;
     let om = sources::autour(lat, lon);
-    let mut j = decrire(&s, lat, lon, om.as_deref().and_then(prevision::arome_de).as_ref(), maintenant);
+    let cal = crate::journal::calibration();
+    let mut j = decrire(&s, lat, lon, om.as_deref().and_then(prevision::arome_de).as_ref(), maintenant, &cal, trajet);
     j["ciel"] = om.as_deref().and_then(prevision::ciel_de).unwrap_or(Value::Null);
+    j["commune"] = json!(sources::commune(lat, lon));
+    j["cumul_passe_mm"] = json!(cumul_passe(lat, lon).ok().map(|mm| r(mm, 1)));
     Ok(j)
 }
 
-/// La prévision d'un point d'une scène, en JSON ; elle attend ensuite sa vérification (journal).
-pub fn decrire(s: &Scene, lat: f64, lon: f64, arome: Option<&Arome>, maintenant: i64) -> Value {
+/// La prévision d'un point d'une scène, en JSON ; à l'arrêt, elle attend ensuite sa vérification (journal).
+pub fn decrire(s: &Scene, lat: f64, lon: f64, arome: Option<&Arome>, maintenant: i64, cal: &Calibration, trajet: Option<(f64, f64)>) -> Value {
     let (x, y) = s.domaine.px(lat, lon);
     let km = radar::km_par_px(lat) as f32;
     let derniere = &s.images[s.images.len() - 1];
     let duree = s.dt * (s.images.len() - 1) as f32;
     let tendance = prevision::tendance(&s.images[0], derniere, (x, y), 100.0 / km, duree);
     let graine = (s.t0 as u64) ^ ((lat * 100.0).round() as i64 as u64).rotate_left(20) ^ ((lon * 100.0).round() as i64 as u64).rotate_left(40);
-    let ens = prevision::ensemble(derniere, &s.champ, (x, y), tendance, km, graine);
-    let serie = prevision::serie(&ens, arome, s.t0, maintenant);
+    let debut = prevision::minute_de(s.t0, maintenant);
+    // km/h et cap (0 = nord, sens horaire) → pixels par minute, y vers le sud
+    let pas = trajet.map_or((0.0, 0.0), |(v, cap)| {
+        let d = (v / 60.0) as f32 / km;
+        let c = (cap as f32).to_radians();
+        (c.sin() * d, -c.cos() * d)
+    });
+    let ens = prevision::ensemble(derniere, &s.champ, (x, y), pas, debut, tendance, km, graine);
+    let serie = prevision::serie(&ens, arome, s.t0, maintenant, cal);
     let persistance = derniere.part_pluie(x, y, 5.0 / km);
+    let fin = (debut + 60).min(HORIZON);
+    let (cumul, cumul_haut) = ens.cumul(debut, fin);
 
     let mut a = Attente { t0: s.t0, lat, lon, domaine: s.domaine, x, y, p: [0.0; 9], p_radar: [0.0; 9], p_arome: [None; 9],
         p_persist: persistance, faites: 0 };
     for (k, &e) in ECHEANCES.iter().enumerate() {
         a.p_radar[k] = ens.p(e as usize);
         a.p_arome[k] = arome.and_then(|ar| ar.p(s.t0 + 60 * e as i64));
-        a.p[k] = prevision::melanger(a.p_radar[k], a.p_arome[k], e as f32);
+        a.p[k] = cal.melanger(a.p_radar[k], a.p_arome[k], e as f32);
     }
-    journal::noter(a);
+    if trajet.is_none() {
+        journal::noter(a); // en mouvement, le point vérifié ne serait pas celui de la prévision
+    }
 
     // vitesses en km/h, u vers l'est, v vers le nord
     let kmh = |(u, v): (f32, f32)| (r((u * km * 60.0) as f64, 1), r((-v * km * 60.0) as f64, 1));
@@ -173,6 +206,7 @@ pub fn decrire(s: &Scene, lat: f64, lon: f64, arome: Option<&Arome>, maintenant:
             let (cu, cv) = kmh(c.vitesse.unwrap_or_else(|| s.champ.vitesse(cx, cy)));
             let arrivee = c.arrivee((x, y), HORIZON as u32, &s.champ).map(|t| ((s.t0 + 60 * t as i64 - maintenant) as f64 / 60.0).max(0.0).round());
             json!({"position": ll(cx, cy), "rayon_km": r((c.rayon() * km) as f64, 1), "dbz_max": c.dbz_max, "suivie": c.passe.len(),
+                "grele": c.dbz_max >= SEUIL_GRELE,
                 "vitesse_kmh": r(cu.hypot(cv), 0), "passe": c.passe.iter().map(|p| ll(p.0, p.1)).collect::<Vec<_>>(),
                 "prevue": (1..=6).map(|k| { let p = c.position(10.0 * k as f32, &s.champ); ll(p.0, p.1) }).collect::<Vec<_>>(),
                 "arrivee_min": arrivee})
@@ -187,7 +221,11 @@ pub fn decrire(s: &Scene, lat: f64, lon: f64, arome: Option<&Arome>, maintenant:
         "point": {"lat": lat, "lon": lon, "dbz": (ici > SANS).then_some(ici), "neige": ici > SANS && derniere.neige[yi * derniere.l + xi],
             "persistance": r(persistance as f64, 3)},
         "serie": serie.iter().map(|m| json!({"t": m.t, "p": r(m.p as f64, 3), "p_cumul": r(m.p_cumul as f64, 3), "p_radar": r(m.p_radar as f64, 3),
-            "p_arome": m.p_arome.map(|p| r(p as f64, 3)), "mm_h": r(m.mm_h as f64, 2)})).collect::<Vec<_>>(),
+            "p_arome": m.p_arome.map(|p| r(p as f64, 3)), "mm_h": r(m.mm_h as f64, 2), "p_grele": r(m.p_grele as f64, 3)})).collect::<Vec<_>>(),
+        "cumul": {"mm": r(cumul as f64, 1), "mm_haut": r(cumul_haut as f64, 1), "minutes": fin - debut},
+        "grele_1h": r(ens.p_grele(debut, fin) as f64, 3),
+        "trajet": trajet.map(|(v, cap)| json!({"vitesse_kmh": r(v, 0), "cap": r(cap, 0)})),
+        "reglage_auto": cal.n > 0,
         "mouvement": {"vitesse_kmh": r(u.hypot(v), 0), "direction": r((u.atan2(v).to_degrees() + 360.0) % 360.0, 0),
             "qualite": r(s.champ.qualite as f64, 2), "blocs": s.champ.blocs, "tendance_db_h": r((tendance * 60.0) as f64, 1)},
         "vecteurs": vecteurs,
@@ -223,7 +261,8 @@ mod essais {
         assert!(image_prevision(1_800_000_000, d.tx, d.ty, 30).is_none(), "scène non gardée");
         // un point à l'est de la grande averse (300 + 36, 280) : elle arrive dessus
         let (lat, lon) = d.lat_lon(400.0, 280.0);
-        let j = decrire(&s, lat, lon, None, 1_800_000_000 + 600);
+        let cal = Calibration::default();
+        let j = decrire(&s, lat, lon, None, 1_800_000_000 + 600, &cal, None);
         let serie = j["serie"].as_array().unwrap();
         assert_eq!(serie.len(), 61);
         let p = |k: usize| serie[k]["p"].as_f64().unwrap();
@@ -236,5 +275,14 @@ mod essais {
         assert_eq!(j["vecteurs"].as_array().unwrap().len(), 144);
         assert_eq!(j["arome"], false);
         assert!(j["cellules"].as_array().unwrap().iter().any(|c| c["suivie"] == 4), "{}", j["cellules"]);
+        assert!(j["cumul"]["mm"].as_f64().unwrap() > 0.0 && j["cumul"]["minutes"] == 60);
+        assert_eq!(j["grele_1h"], 0.0, "45 dBZ au plus : pas de grêle");
+        assert_eq!(j["trajet"], Value::Null);
+        // en roulant vers l'ouest à 60 km/h, on va au-devant de l'averse qui arrive de l'ouest
+        let ouest = decrire(&s, lat, lon, None, 1_800_000_000 + 600, &cal, Some((60.0, 270.0)));
+        let p = |j: &Value, k: usize| j["serie"][k]["p"].as_f64().unwrap();
+        let premiere = |j: &Value| (0..=60).find(|&k| p(j, k) >= 0.5);
+        assert!(premiere(&ouest).is_some() && premiere(&ouest) < premiere(&j), "on rencontre la pluie plus tôt : {:?} < {:?}", premiere(&ouest), premiere(&j));
+        assert_eq!(ouest["trajet"]["vitesse_kmh"], 60.0);
     }
 }

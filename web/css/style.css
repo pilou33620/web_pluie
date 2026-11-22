@@ -51,8 +51,12 @@ html[data-meteo="orage"] .eclair { animation:eclair 11s linear infinite; }
 #ciel-temp:empty { display:none; }
 #ciel-libelle { font-size:18px; font-weight:500; opacity:.95; }
 #phrase { margin:14px 0 0; font-size:30px; font-weight:700; line-height:1.15; }
-#detail { margin:8px 0 0; font-size:15px; opacity:.95; }
-#detail:empty { display:none; }
+#detail, #cumuls { margin:8px 0 0; font-size:15px; opacity:.95; }
+#detail:empty, #cumuls:empty, #commune:empty { display:none; }
+#commune { margin:0 0 4px; font-size:17px; font-weight:600; }
+.alerte { padding:12px 16px; border-left:5px solid #c10000; font-weight:600; color:#8f0000; }
+.note { font-size:12px; color:var(--muted); margin:8px 0 0; }
+#fiab-texte { margin:8px 0 0; }
 
 .carte-msg { padding:14px 16px; }
 .carte-msg p { margin:0 0 10px; }

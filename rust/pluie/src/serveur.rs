@@ -54,6 +54,7 @@ fn type_mime(p: &Path) -> Option<&'static str> {
         "css" => "text/css; charset=utf-8",
         "json" => "application/json",
         "svg" => "image/svg+xml",
+        "png" => "image/png", // icônes de l'écran d'accueil
         _ => return None,
     })
 }
@@ -146,7 +147,11 @@ fn servir(r: &mut Requete) -> Reponse {
         };
         match chemin.as_str() {
             "/api/radar" => return Some(json(sources::radar().map(|v| (*v).clone()))),
-            "/api/prevision" => return Some(json(sources::coordonnees(&q, 0.01).and_then(|(a, b)| scene::prevision(a, b, maintenant())))),
+            "/api/prevision" => {
+                let res = sources::coordonnees(&q, 0.01).and_then(|(a, b)| Ok((a, b, sources::deplacement(&q)?)));
+                return Some(json(res.and_then(|(a, b, d)| scene::prevision(a, b, maintenant(), d))));
+            }
+            "/api/fiabilite" => return Some(Reponse::json(200, &journal::fiabilite())),
             _ => {}
         }
         if let Some((t0, tx, ty, e)) = image_prevision(&chemin) {

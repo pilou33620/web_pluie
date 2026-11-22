@@ -11,18 +11,20 @@
   const MARGES = { g: 40, d: 42 }; // communes aux deux graphiques : les colonnes tombent sous la courbe
 
   const REGLAGES = 'web_pluie.reglages';
-  const R = Object.assign({ fleches: false, cellules: true, notifs: false, seuil: 0.5 }, (() => {
+  const R = Object.assign({ fleches: false, cellules: true, notifs: false, seuil: 0.5, fin: false }, (() => {
     try { return JSON.parse(localStorage.getItem(REGLAGES)) || {}; } catch { return {}; }
   })());
   const garder = () => { try { localStorage.setItem(REGLAGES, JSON.stringify(R)); } catch { /* navigation privée */ } };
 
-  const etat = { pos: null, veille: null, prev: null, radar: [], images: [], cadre: -1, couche: null, minuteur: null, lecture: null, alerte: false, vue: false };
+  const etat = { pos: null, veille: null, prev: null, radar: [], images: [], cadre: -1, couche: null, minuteur: null, lecture: null, alerte: false, alerteFin: false, alerteGrele: false,
+    vue: false, mouvement: null, charge: 0 };
 
   // ---------- Outils ----------
   const pct = p => `${Math.round(p * 100)} %`;
   const hm = t => new Date(t * 1000).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
   const DIRS = ['le nord', 'le nord-est', "l'est", 'le sud-est', 'le sud', 'le sud-ouest', "l'ouest", 'le nord-ouest'];
   const versDir = d => DIRS[Math.round(d / 45) % 8];
+  const mmCumul = mm => `${mm.toFixed(1).replace('.', ',')} mm`;
   const mmTexte = mm => `${mm < 10 ? mm.toFixed(1).replace('.', ',') : Math.round(mm)} mm/h`;
   const force = mm => (mm < 1 ? 'faible' : mm < 4 ? 'modérée' : mm < 10 ? 'forte' : 'très forte');
   const km = (a, b) => {
@@ -127,6 +129,12 @@
       L.circle([etat.pos.lat, etat.pos.lon], { radius: Math.min(etat.pos.precision || 0, 3000), color: C1, weight: 1, fillOpacity: 0.08, interactive: false }).addTo(groupes.point);
       L.circleMarker([etat.pos.lat, etat.pos.lon], { radius: 7, color: '#fff', weight: 2, fillColor: C1, fillOpacity: 1 })
         .bindTooltip(infobulle('Votre position')).addTo(groupes.point);
+      if (p && p.trajet) {
+        // le trajet supposé pour l'heure qui vient : tout droit, à la vitesse actuelle
+        const d = p.trajet.vitesse_kmh, c = p.trajet.cap * Math.PI / 180, la = etat.pos.lat, lo = etat.pos.lon;
+        const fin = [la + d * Math.cos(c) / 111.2, lo + d * Math.sin(c) / (111.2 * Math.cos(la * Math.PI / 180))];
+        L.polyline([[la, lo], fin], { color: C1, weight: 2.5, dashArray: '6 6', interactive: false }).addTo(groupes.point);
+      }
     }
     groupes.fleches.clearLayers();
     groupes.cellules.clearLayers();
@@ -139,8 +147,8 @@
       L.circleMarker(fin, { radius: 2.5, stroke: false, fillColor: '#1d3b5e', fillOpacity: 0.9, interactive: false }).addTo(groupes.fleches);
     }
     for (const c of p.cellules) {
-      const t = `Averse forte : ${c.dbz_max} dBZ, ${c.vitesse_kmh} km/h` + (c.arrivee_min != null ? `, sur vous dans ~${c.arrivee_min} min` : '');
-      L.circle(c.position, { radius: c.rayon_km * 1000, color: '#a80000', weight: 1.5, fillOpacity: 0.1 }).bindTooltip(infobulle(t)).addTo(groupes.cellules);
+      const t = `${c.grele ? 'Grêle possible' : 'Averse forte'} : ${c.dbz_max} dBZ, ${c.vitesse_kmh} km/h` + (c.arrivee_min != null ? `, sur vous dans ~${c.arrivee_min} min` : '');
+      L.circle(c.position, { radius: c.rayon_km * 1000, color: c.grele ? '#7a00a8' : '#a80000', weight: c.grele ? 3 : 1.5, fillOpacity: 0.1 }).bindTooltip(infobulle(t)).addTo(groupes.cellules);
       if (c.passe.length > 1) L.polyline(c.passe, { color: '#a80000', weight: 1.5, opacity: 0.5, interactive: false }).addTo(groupes.cellules);
       L.polyline([c.position, ...c.prevue], { color: '#a80000', weight: 1.5, dashArray: '4 5', interactive: false }).addTo(groupes.cellules);
     }
@@ -171,6 +179,8 @@
     if (etat.veille !== null) navigator.geolocation.clearWatch(etat.veille);
     etat.veille = navigator.geolocation.watchPosition(p => {
       const nouv = { lat: p.coords.latitude, lon: p.coords.longitude, precision: p.coords.accuracy };
+      const { speed: v, heading: cap } = p.coords;
+      etat.mouvement = Number.isFinite(v) && v >= 1.5 && Number.isFinite(cap) ? { vitesse: v * 3.6, cap } : null;
       const bouge = !etat.pos || km(etat.pos, nouv) > 0.5;
       etat.pos = nouv;
       $('#sans-gps').hidden = true;
@@ -179,7 +189,7 @@
         carte.setView([nouv.lat, nouv.lon], 8);
       }
       dessinerCarte(etat.prev);
-      if (bouge) charger();
+      if (bouge && Date.now() - etat.charge > 30000) charger();
     }, e => {
       if (!etat.pos) sansGps(e.code === 1 ? 'Position refusée : autorisez la localisation pour ce site dans le navigateur.' : "Position indisponible pour l'instant.");
     }, { enableHighAccuracy: true, maximumAge: 60000, timeout: 30000 });
@@ -190,6 +200,7 @@
   async function charger() {
     clearTimeout(etat.minuteur);
     etat.minuteur = setTimeout(charger, RAFRAICHIR);
+    etat.charge = Date.now();
     try {
       etat.radar = (await api('/api/radar')).images;
     } catch (e) {
@@ -197,7 +208,8 @@
     }
     if (etat.pos) {
       try {
-        etat.prev = await api(`/api/prevision?lat=${etat.pos.lat.toFixed(4)}&lon=${etat.pos.lon.toFixed(4)}`);
+        const m = etat.mouvement, trajet = m ? `&vitesse=${Math.min(250, m.vitesse).toFixed(0)}&cap=${m.cap.toFixed(0)}` : '';
+        etat.prev = await api(`/api/prevision?lat=${etat.pos.lat.toFixed(4)}&lon=${etat.pos.lon.toFixed(4)}${trajet}`);
         afficherPrevision(etat.prev);
       } catch (e) {
         $('#phrase').textContent = 'Prévision indisponible';
@@ -247,7 +259,19 @@
     $('#phrase').textContent = phrase;
     const mv = p.mouvement;
     const deplacement = mv.blocs > 0 ? `pluie qui va vers ${versDir(mv.direction)} à ${mv.vitesse_kmh} km/h` : 'aucune pluie à suivre autour de vous';
-    $('#detail').textContent = [suite, deplacement, p.arome ? 'radar + AROME' : 'radar seul'].filter(Boolean).join(' · ');
+    const sources = (p.arome ? 'radar + AROME' : 'radar seul') + (p.reglage_auto ? ', réglage automatique' : '');
+    const route = p.trajet ? `en route à ${p.trajet.vitesse_kmh} km/h : prévision le long du trajet` : '';
+    $('#detail').textContent = [suite, route, deplacement, sources].filter(Boolean).join(' · ');
+    $('#commune').textContent = p.commune || '';
+    const cumuls = [];
+    if (p.cumul.mm >= 0.1) {
+      const haut = p.cumul.mm_haut > p.cumul.mm * 1.3 ? ` (jusqu'à ${mmCumul(p.cumul.mm_haut)})` : '';
+      cumuls.push(`≈ ${mmCumul(p.cumul.mm)} d'ici ${p.cumul.minutes >= 60 ? '1 h' : `${p.cumul.minutes} min`}${haut}`);
+    }
+    if (p.cumul_passe_mm != null) cumuls.push(p.cumul_passe_mm >= 0.1 ? `${mmCumul(p.cumul_passe_mm)} tombés ces 2 h` : 'rien de tombé ces 2 h');
+    $('#cumuls').textContent = cumuls.join(' · ');
+    $('#alerte-grele').hidden = !(p.grele_1h >= 0.15);
+    $('#alerte-grele').textContent = `⚠ Risque de grêle ou d'averse violente d'ici 1 h : ${pct(p.grele_1h)}`;
     const avecSerie = p.serie.length > K0;
     $('#tuiles').hidden = $('#fig-p').hidden = $('#tableau-bloc').hidden = !avecSerie;
     if (avecSerie) {
@@ -406,6 +430,23 @@
   function verifierAlerte(p) {
     const s = p.serie;
     if (!R.notifs || s.length < 2) return;
+    const g = s[Math.min(30, s.length - 1)].p_grele;
+    if (!etat.alerteGrele && g >= 0.3) {
+      etat.alerteGrele = true;
+      notifier('Risque de grêle', `Grêle ou averse violente possible d'ici 30 min (${pct(g)}).`);
+    } else if (g < 0.1) {
+      etat.alerteGrele = false;
+    }
+    const pleut = (p.point.dbz != null && p.point.dbz >= 12) || s[0].p >= 0.5;
+    if (R.fin && pleut) {
+      const k = s.findIndex((m, i) => i >= K0 && m.p < 0.3);
+      if (!etat.alerteFin && k >= 0 && k <= 20) {
+        etat.alerteFin = true;
+        notifier('Fin de la pluie', `La pluie devrait s'arrêter dans ~${k} min.`);
+      }
+    } else if (!pleut) {
+      etat.alerteFin = false;
+    }
     const c = s[Math.min(30, s.length - 1)].p_cumul;
     if (!etat.alerte && c >= R.seuil && s[0].p < 0.5) {
       etat.alerte = true; // une alerte par épisode : la suivante attend que le risque retombe
@@ -425,6 +466,46 @@
   $('#o-fleches').addEventListener('change', e => { R.fleches = e.target.checked; garder(); majCouches(); });
   $('#o-cellules').addEventListener('change', e => { R.cellules = e.target.checked; garder(); majCouches(); });
   $('#o-seuil').addEventListener('change', e => { R.seuil = +e.target.value; etat.alerte = false; garder(); });
+  $('#o-fin').checked = R.fin;
+  $('#o-fin').addEventListener('change', e => { R.fin = e.target.checked; etat.alerteFin = false; garder(); });
+
+  // ---------- Fiabilité (chargée à l'ouverture) ----------
+  const decimal = x => x.toFixed(3).replace('.', ',');
+  function afficherFiabilite(f) {
+    const corps = $('#fiab-table tbody');
+    corps.replaceChildren();
+    $('#fiab-table').hidden = !f.total;
+    if (!f.total) {
+      $('#fiab-texte').textContent = "Pas encore de vérification : le journal se remplit quand la page est ouverte (chaque prévision est comparée au radar des 1 h 30 qui suivent).";
+      return;
+    }
+    const e = f.echeances.find(x => x.echeance === 30) || f.echeances[0], r = f.reglage;
+    let t = `${f.total} vérifications. À ${e.echeance} min : score ${decimal(e.brier)}`;
+    if (e.gain != null) t += `, ${e.gain >= 0 ? `${pct(e.gain)} mieux` : `${pct(-e.gain)} moins bien`} que « il pleuvra comme maintenant »`;
+    const tranches = ['à 10-30 min', 'à 40-60 min', 'à 70-90 min'];
+    const poids = r.poids.map((w, i) => (w == null ? null : `radar ${pct(w)} ${tranches[i]}`)).filter(Boolean);
+    t += `. Réglage automatique : ${poids.length ? `poids ${poids.join(', ')}` : "poids par défaut (pas encore assez de vérifications avec AROME)"} ; correction des probabilités jusqu'à ${pct(r.ecart_max)}.`;
+    $('#fiab-texte').textContent = t;
+    for (const x of f.echeances) {
+      const tr = document.createElement('tr');
+      const v = (y, f2) => (y == null ? '—' : f2(y));
+      for (const c of [`${x.echeance} min`, String(x.n), decimal(x.brier), decimal(x.brier_persist), v(x.gain, y => `${y >= 0 ? '+' : '−'}${pct(Math.abs(y))}`),
+        v(x.detection, pct), v(x.fausses, pct)]) {
+        const td = document.createElement('td');
+        td.textContent = c;
+        tr.append(td);
+      }
+      corps.append(tr);
+    }
+  }
+  $('#fiabilite').addEventListener('toggle', async e => {
+    if (!e.target.open) return;
+    try {
+      afficherFiabilite(await api('/api/fiabilite'));
+    } catch (er) {
+      $('#fiab-texte').textContent = `Fiabilité indisponible : ${er.message}`;
+    }
+  });
   $('#o-notifs').addEventListener('change', async e => {
     if (e.target.checked) {
       if (!('Notification' in window)) {

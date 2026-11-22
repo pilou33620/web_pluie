@@ -2,10 +2,13 @@
 //! la trajectoire qui arrive sur le point, avec une vitesse perturbée, une croissance ou un déclin
 //! tiré autour de la tendance mesurée, et un décalage qui grandit avec l'échéance. La probabilité
 //! est la part des membres mouillés. Au-delà de 20 min, elle se mélange à celle d'AROME (part des
-//! points voisins où le modèle fait pleuvoir), dont le poids grandit avec l'échéance.
+//! points voisins où le modèle fait pleuvoir), dont le poids grandit avec l'échéance ; le tout est
+//! recalibré d'après les vérifications passées (calibration.rs). En mouvement, le point suit son
+//! trajet. Les membres disent aussi le risque de grêle et le cumul de pluie attendu.
 
 use serde_json::{json, Value};
 
+use crate::calibration::Calibration;
 use crate::mouvement::Champ;
 use crate::radar::{mm_h, Grille, SANS, SEUIL_DBZ};
 
@@ -19,6 +22,8 @@ const ERREUR_VITESSE_MIN: f32 = 0.04; // pixels par minute (~2 km/h)
 const ERREUR_CROISSANCE: f32 = 0.05; // dB par minute
 const DECALAGE_KM: (f32, f32) = (1.0, 0.1); // km, plus km par minute d'échéance
 pub const AROME_SEUIL_MM: f64 = 0.05; // en 15 min (0,2 mm/h, comme le seuil radar)
+/// Écho de grêle probable (et d'averse violente, ~100 mm/h).
+pub const SEUIL_GRELE: f32 = 55.0;
 
 /// Générateur reproductible (SplitMix64) ; tirages gaussiens par Box-Muller.
 pub struct Hasard(pub u64);
@@ -48,6 +53,8 @@ pub struct Ensemble {
     pub pluie: Vec<Vec<bool>>,
     /// [membre][minute] : intensité (mm/h).
     pub mm_h: Vec<Vec<f32>>,
+    /// [membre][minute] : écho de grêle sur le point.
+    pub grele: Vec<Vec<bool>>,
 }
 
 impl Ensemble {
@@ -58,6 +65,18 @@ impl Ensemble {
     /// Part des membres mouillés au moins une fois entre les minutes a et b (incluses).
     pub fn p_cumul(&self, a: usize, b: usize) -> f32 {
         self.pluie.iter().filter(|m| m[a..=b].iter().any(|x| *x)).count() as f32 / self.pluie.len() as f32
+    }
+
+    /// Part des membres qui voient de la grêle au moins une fois entre les minutes a et b.
+    pub fn p_grele(&self, a: usize, b: usize) -> f32 {
+        self.grele.iter().filter(|m| m[a..=b].iter().any(|x| *x)).count() as f32 / self.grele.len() as f32
+    }
+
+    /// Cumul de pluie (mm) entre les minutes a et b : médiane et 80e centile des membres.
+    pub fn cumul(&self, a: usize, b: usize) -> (f32, f32) {
+        let mut v: Vec<f32> = self.mm_h.iter().map(|m| m[a..=b].iter().sum::<f32>() / 60.0).collect();
+        v.sort_by(f32::total_cmp);
+        (v[v.len() / 2], v[v.len() * 4 / 5])
     }
 
     /// Intensité médiane des membres mouillés (0 si aucun).
@@ -71,13 +90,20 @@ impl Ensemble {
     }
 }
 
-/// L'ensemble pour le point (x, y) de l'image `g` (la plus récente). `tendance` en dB par minute,
-/// `km_px` la taille d'un pixel, `graine` rend le tirage reproductible.
-pub fn ensemble(g: &Grille, champ: &Champ, (x, y): (f32, f32), tendance: f32, km_px: f32, graine: u64) -> Ensemble {
+/// L'ensemble pour le point (x, y) de l'image `g` (la plus récente). En mouvement, le point se
+/// déplace de `trajet` pixels par minute à partir de la minute `debut` (maintenant). `tendance` en dB
+/// par minute, `km_px` la taille d'un pixel, `graine` rend le tirage reproductible.
+#[allow(clippy::too_many_arguments)]
+pub fn ensemble(g: &Grille, champ: &Champ, (x, y): (f32, f32), trajet: (f32, f32), debut: usize, tendance: f32, km_px: f32, graine: u64) -> Ensemble {
+    let fixe = trajet == (0.0, 0.0);
+    let cible = |t: usize| {
+        let k = t.saturating_sub(debut) as f32;
+        (x + trajet.0 * k, y + trajet.1 * k)
+    };
     let mut h = Hasard(graine);
     let (u, v) = champ.vitesse(x, y);
     let sigma = (ERREUR_VITESSE * u.hypot(v)).max(ERREUR_VITESSE_MIN);
-    let (mut pluie, mut intensite) = (Vec::with_capacity(MEMBRES), Vec::with_capacity(MEMBRES));
+    let (mut pluie, mut intensite, mut grele) = (Vec::with_capacity(MEMBRES), Vec::with_capacity(MEMBRES), Vec::with_capacity(MEMBRES));
     for m in 0..MEMBRES {
         // le membre 0 est la prévision de contrôle, sans perturbation
         let (dv, croissance, e) = if m == 0 {
@@ -85,22 +111,28 @@ pub fn ensemble(g: &Grille, champ: &Champ, (x, y): (f32, f32), tendance: f32, km
         } else {
             ((sigma * h.normal(), sigma * h.normal()), tendance + ERREUR_CROISSANCE * h.normal(), (h.normal(), h.normal()))
         };
-        let (mut p, mut lp, mut li) = ((x, y), vec![false; HORIZON + 1], vec![0.0; HORIZON + 1]);
+        let (mut p, mut lp, mut li, mut lg) = ((x, y), vec![false; HORIZON + 1], vec![0.0; HORIZON + 1], vec![false; HORIZON + 1]);
         for t in 0..=HORIZON {
-            if t > 0 {
-                p = champ.reculer(p, 1.0, dv);
+            if fixe {
+                // point fixe : la trajectoire de t minutes prolonge celle de t − 1
+                if t > 0 {
+                    p = champ.reculer(p, 1.0, dv);
+                }
+            } else {
+                p = (0..t).fold(cible(t), |q, _| champ.reculer(q, 1.0, dv));
             }
             let s = (DECALAGE_KM.0 + DECALAGE_KM.1 * t as f32) / km_px;
             let mut d = g.echantillon(p.0 + e.0 * s, p.1 + e.1 * s);
             if d > SANS {
                 d += croissance * t as f32;
             }
-            (lp[t], li[t]) = (d >= SEUIL_DBZ, mm_h(d));
+            (lp[t], li[t], lg[t]) = (d >= SEUIL_DBZ, mm_h(d), d >= SEUIL_GRELE);
         }
         pluie.push(lp);
         intensite.push(li);
+        grele.push(lg);
     }
-    Ensemble { pluie, mm_h: intensite }
+    Ensemble { pluie, mm_h: intensite, grele }
 }
 
 /// Évolution de l'intensité (dB par minute) dans un carré de 2 × `demi` pixels autour du point :
@@ -205,16 +237,6 @@ pub fn poids_radar(echeance: f32) -> f32 {
     (1.0 - (echeance - 20.0).max(0.0) / 120.0).clamp(0.5, 1.0)
 }
 
-pub fn melanger(p_radar: f32, p_arome: Option<f32>, echeance: f32) -> f32 {
-    match p_arome {
-        Some(a) => {
-            let w = poids_radar(echeance);
-            w * p_radar + (1.0 - w) * a
-        }
-        None => p_radar,
-    }
-}
-
 /// Une minute de la prévision.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Minute {
@@ -225,12 +247,19 @@ pub struct Minute {
     pub p_radar: f32,
     pub p_arome: Option<f32>,
     pub mm_h: f32,
+    /// Probabilité de grêle d'ici cette minute.
+    pub p_grele: f32,
+}
+
+/// La minute de l'ensemble qui correspond à `maintenant`, pour une dernière image prise à t0.
+pub fn minute_de(t0: i64, maintenant: i64) -> usize {
+    (((maintenant - t0) as f32 / 60.0).round().max(0.0) as usize).min(HORIZON)
 }
 
 /// La prévision minute par minute de `maintenant` à +60 min, pour une dernière image prise à t0
-/// (secondes). S'arrête à l'horizon de l'ensemble si l'image est ancienne.
-pub fn serie(ens: &Ensemble, arome: Option<&Arome>, t0: i64, maintenant: i64) -> Vec<Minute> {
-    let debut = ((maintenant - t0) as f32 / 60.0).round().max(0.0) as usize;
+/// (secondes), recalibrée par `cal`. S'arrête à l'horizon de l'ensemble si l'image est ancienne.
+pub fn serie(ens: &Ensemble, arome: Option<&Arome>, t0: i64, maintenant: i64, cal: &Calibration) -> Vec<Minute> {
+    let debut = minute_de(t0, maintenant);
     let mut cumul = 0.0f32;
     let mut sortie = Vec::new();
     for k in 0..=60usize {
@@ -240,10 +269,10 @@ pub fn serie(ens: &Ensemble, arome: Option<&Arome>, t0: i64, maintenant: i64) ->
         }
         let t = maintenant + 60 * k as i64;
         let (pr, pa) = (ens.p(e), arome.and_then(|a| a.p(t)));
-        let p = melanger(pr, pa, e as f32);
-        let pc = melanger(ens.p_cumul(debut, e), arome.and_then(|a| a.p_cumul(maintenant, t)), e as f32);
+        let p = cal.melanger(pr, pa, e as f32);
+        let pc = cal.melanger(ens.p_cumul(debut, e), arome.and_then(|a| a.p_cumul(maintenant, t)), e as f32);
         cumul = cumul.max(pc).max(p); // « d'ici t » ne peut que croître
-        sortie.push(Minute { t, p, p_cumul: cumul, p_radar: pr, p_arome: pa, mm_h: ens.mm_h_median(e) });
+        sortie.push(Minute { t, p, p_cumul: cumul, p_radar: pr, p_arome: pa, mm_h: ens.mm_h_median(e), p_grele: ens.p_grele(debut, e) });
     }
     sortie
 }
@@ -276,7 +305,7 @@ mod essais {
     #[test]
     fn front_qui_arrive() {
         // le front file vers l'est à 1 pixel par minute (~52 km/h) ; le point est 40 pixels devant
-        let ens = ensemble(&front(), &Champ::uniforme(1.0, 0.0), (340.0, 384.0), 0.0, 0.866, 1);
+        let ens = ensemble(&front(), &Champ::uniforme(1.0, 0.0), (340.0, 384.0), (0.0, 0.0), 0, 0.0, 0.866, 1);
         assert_eq!(ens.pluie.len(), MEMBRES);
         assert!(ens.p(0) == 0.0 && ens.p(20) < 0.1, "trop tôt : {}", ens.p(20));
         assert!(ens.p(70) > 0.9 && ens.p(HORIZON) > 0.9, "après le passage : {}", ens.p(70));
@@ -285,14 +314,40 @@ mod essais {
         assert!(ens.p_cumul(0, 50) >= ens.p(50));
         assert!((ens.mm_h_median(70) / mm_h(30.0) - 1.0).abs() < 0.3, "croissance tirée autour de 0");
         // même tirage, même résultat
-        let bis = ensemble(&front(), &Champ::uniforme(1.0, 0.0), (340.0, 384.0), 0.0, 0.866, 1);
+        let bis = ensemble(&front(), &Champ::uniforme(1.0, 0.0), (340.0, 384.0), (0.0, 0.0), 0, 0.0, 0.866, 1);
         assert_eq!(bis.pluie, ens.pluie);
         // déjà sous la pluie, sans mouvement : il pleut tout du long
-        let sous = ensemble(&front(), &Champ::uniforme(0.0, 0.0), (100.0, 384.0), 0.0, 0.866, 2);
+        let sous = ensemble(&front(), &Champ::uniforme(0.0, 0.0), (100.0, 384.0), (0.0, 0.0), 0, 0.0, 0.866, 2);
         assert!((0..=HORIZON).all(|t| sous.p(t) == 1.0));
         // une pluie qui faiblit vite finit par ne plus mouiller
-        let declin = ensemble(&front(), &Champ::uniforme(0.0, 0.0), (100.0, 384.0), -0.4, 0.866, 3);
+        let declin = ensemble(&front(), &Champ::uniforme(0.0, 0.0), (100.0, 384.0), (0.0, 0.0), 0, -0.4, 0.866, 3);
         assert!(declin.p(0) == 1.0 && declin.p(HORIZON) < 0.2);
+        // sous la pluie (30 dBZ ≈ 2,7 mm/h) pendant une heure : ~2,7 mm, pas de grêle
+        let (median, haut) = sous.cumul(0, 60);
+        assert!((median - 61.0 / 60.0 * mm_h(30.0)).abs() < 0.3 && haut >= median, "{median} {haut}");
+        assert_eq!(sous.p_grele(0, 60), 0.0);
+    }
+
+    #[test]
+    fn en_mouvement_vers_la_pluie() {
+        // la pluie ne bouge pas ; on marche vers l'ouest à 1 pixel par minute, 40 pixels devant elle
+        let ens = ensemble(&front(), &Champ::uniforme(0.0, 0.0), (340.0, 384.0), (-1.0, 0.0), 10, 0.0, 0.866, 4);
+        assert!(ens.p(25) < 0.1, "on n'y est pas encore");
+        let moitie = (0..=HORIZON).find(|&t| ens.p(t) >= 0.5).unwrap();
+        assert!((45..=55).contains(&moitie), "on part à la minute 10, on entre sous la pluie vers la minute 50 : {moitie}");
+        // immobile au même endroit : jamais de pluie
+        let reste = ensemble(&front(), &Champ::uniforme(0.0, 0.0), (340.0, 384.0), (0.0, 0.0), 10, 0.0, 0.866, 4);
+        assert!(reste.p(HORIZON) < 0.05);
+    }
+
+    #[test]
+    fn grele() {
+        let mut g = front();
+        g.dbz.iter_mut().filter(|d| **d > SANS).for_each(|d| *d = 60.0);
+        let ens = ensemble(&g, &Champ::uniforme(0.0, 0.0), (100.0, 384.0), (0.0, 0.0), 0, 0.0, 0.866, 5);
+        assert!(ens.p_grele(0, 60) > 0.95);
+        let s = serie(&ens, None, 1_800_000_000, 1_800_000_000, &Calibration::default());
+        assert!(s[30].p_grele > 0.95);
     }
 
     #[test]
@@ -335,25 +390,23 @@ mod essais {
         assert_eq!(ciel_de(&reponse_arome(t0)), None);
         assert_eq!(poids_radar(10.0), 1.0);
         assert_eq!(poids_radar(80.0), 0.5);
-        assert_eq!(melanger(0.2, Some(1.0), 80.0), 0.6);
-        assert_eq!(melanger(0.2, None, 80.0), 0.2);
     }
 
     #[test]
     fn serie_depuis_maintenant() {
-        let ens = ensemble(&front(), &Champ::uniforme(1.0, 0.0), (340.0, 384.0), 0.0, 0.866, 1);
+        let ens = ensemble(&front(), &Champ::uniforme(1.0, 0.0), (340.0, 384.0), (0.0, 0.0), 0, 0.0, 0.866, 1);
         let t0 = 1_800_000_000;
         // image prise il y a 12 min : la série commence à la minute 12 de l'ensemble
-        let s = serie(&ens, None, t0, t0 + 720);
+        let s = serie(&ens, None, t0, t0 + 720, &Calibration::default());
         assert_eq!(s.len(), 61);
         assert_eq!(s[0].t, t0 + 720);
         assert_eq!(s[30].p, ens.p(42));
         assert!(s.windows(2).all(|w| w[1].p_cumul >= w[0].p_cumul), "le cumul ne décroît pas");
         assert!(s.iter().all(|m| m.p_cumul >= m.p && m.p_arome.is_none()));
         // image vieille de 40 min : on s'arrête à l'horizon
-        assert_eq!(serie(&ens, None, t0, t0 + 2400).len(), HORIZON - 40 + 1);
+        assert_eq!(serie(&ens, None, t0, t0 + 2400, &Calibration::default()).len(), HORIZON - 40 + 1);
         let a = arome_de(&reponse_arome(t0)).unwrap();
-        let s = serie(&ens, Some(&a), t0, t0 + 720);
+        let s = serie(&ens, Some(&a), t0, t0 + 720, &Calibration::default());
         assert_eq!(s[0].p_arome, Some(0.0));
         assert!(s.iter().any(|m| m.p_arome == Some(1.0)));
     }

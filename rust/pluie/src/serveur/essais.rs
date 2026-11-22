@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 
 use super::*;
 use crate::radar::{self, Grille, TUILE};
-use crate::sources::{CACHE_DISQUE, FAUX, OM, OSM, RAINVIEWER};
+use crate::sources::{BAN, CACHE_DISQUE, FAUX, OM, OSM, RAINVIEWER};
 
 /// L'heure de la dernière fausse image : il y a 10 à 20 min, comme chez RainViewer.
 static T: LazyLock<i64> = LazyLock::new(|| maintenant() / 600 * 600 - 600);
@@ -49,6 +49,9 @@ fn faux(url: &str) -> Result<Vec<u8>, Erreur> {
             return Ok(radar::image(&Grille::vide(TUILE, TUILE)).unwrap());
         }
         return Ok(fausse_tuile(n(0), n(3), n(4)));
+    }
+    if url.starts_with(BAN) {
+        return ok(json!({"features": [{"properties": {"city": "Pessac"}}]}));
     }
     if url.starts_with(OSM) {
         return Ok(b"PNG-OSM".to_vec());
@@ -133,7 +136,7 @@ fn banc_serveur() {
     // --- Fichiers servis et refusés
     for (c, attendu) in [
         ("/", 200), ("/index.html", 200), ("/sw.js", 200), ("/manifest.json", 200), ("/js/app.js", 200), ("/js/paysage.js", 200), ("/css/style.css", 200),
-        ("/css/icone.svg", 200), ("/vendor/leaflet/leaflet.js", 200), ("/vendor/leaflet/leaflet.css", 200), ("/favicon.ico", 204),
+        ("/css/icone.svg", 200), ("/css/icone-180.png", 200), ("/css/icone-512.png", 200), ("/vendor/leaflet/leaflet.js", 200), ("/vendor/leaflet/leaflet.css", 200), ("/favicon.ico", 204),
         ("/.git/config", 404), ("/.gitignore", 404), ("/Cargo.toml", 404), ("/rust/pluie/src/serveur.rs", 404), ("/README.md", 404),
         ("/web/index.html", 404), ("/js/", 404), ("/js/../Cargo.toml", 404), ("/js/%2e%2e/Cargo.toml", 404), ("/js/.cache.js", 404),
         ("/vendor/leaflet", 404), ("/cache/osm/1/0/0.png", 404), ("/donnees/verification.jsonl", 404), ("/C:%5cWindows%5cwin.ini", 404),
@@ -143,12 +146,12 @@ fn banc_serveur() {
     }
     assert_eq!(requete(port, "/.git/config", None, "HEAD").code, 404);
     for (c, t) in [("/", "text/html; charset=utf-8"), ("/js/app.js", "text/javascript; charset=utf-8"), ("/css/style.css", "text/css; charset=utf-8"),
-        ("/manifest.json", "application/json"), ("/css/icone.svg", "image/svg+xml")] {
+        ("/manifest.json", "application/json"), ("/css/icone.svg", "image/svg+xml"), ("/css/icone-192.png", "image/png")] {
         let r = get(c);
         assert_eq!(r.code, 200, "{c}");
         assert!(r.tete.lines().any(|l| l == format!("Content-Type: {t}")), "{c} : {}", r.tete);
     }
-    for inconnu in ["LICENSE", "a.png", "a.txt", "a.exe", "a.md"] {
+    for inconnu in ["LICENSE", "a.txt", "a.exe", "a.md", "a.jsonl"] {
         assert_eq!(type_mime(Path::new(inconnu)), None, "{inconnu}");
     }
     assert_eq!(requete(port, "/", Some("evil.example:8802"), "GET").code, 403, "Host étranger");
@@ -181,6 +184,22 @@ fn banc_serveur() {
     assert_eq!(p["t0"], *T);
     assert_eq!(p["arome"], true);
     assert_eq!(p["ciel"]["temperature"], 12.5);
+    assert_eq!(p["commune"], "Pessac");
+    assert_eq!(p["cumul_passe_mm"], 0.0, "l'averse n'est pas encore passée sur le point");
+    assert_eq!(p["trajet"], Value::Null);
+    assert!(p["serie"][0]["p_grele"].is_number() && p["cumul"]["mm"].is_number());
+    // en mouvement
+    for q in ["vitesse=45&cap=999", "vitesse=abc&cap=90"] {
+        assert_eq!(get(&format!("/api/prevision?lat=44.8065&lon=-0.6303&{q}")).code, 400, "{q}");
+    }
+    let r = get("/api/prevision?lat=44.8065&lon=-0.6303&vitesse=45&cap=270");
+    assert_eq!(r.code, 200);
+    assert_eq!(r.json()["trajet"]["vitesse_kmh"], 45.0);
+    // fiabilité : journal vide dans le banc
+    let r = get("/api/fiabilite");
+    assert_eq!(r.code, 200);
+    assert_eq!(r.json()["total"], 0);
+    assert_eq!(r.json()["reglage"]["n"], 0);
     assert_eq!(p["ciel"]["jour"], true);
     let serie = p["serie"].as_array().unwrap();
     assert_eq!(serie.len(), 61);

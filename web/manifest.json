@@ -6,5 +6,9 @@
   "background_color": "#ffffff",
   "theme_color": "#ffffff",
   "lang": "fr",
-  "icons": [{ "src": "css/icone.svg", "sizes": "any", "type": "image/svg+xml" }]
+  "icons": [
+    { "src": "css/icone-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "css/icone-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "css/icone.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
 }

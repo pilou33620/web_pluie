@@ -8,6 +8,7 @@
 <meta name="apple-mobile-web-app-title" content="Pluie">
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="css/icone.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="css/icone-180.png">
 <title>web_pluie</title>
 <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
 <link rel="stylesheet" href="css/style.css">
@@ -21,10 +22,14 @@
 </div>
 <div id="appli">
   <header class="hero">
+    <p id="commune"></p>
     <div class="ciel"><span id="ciel-temp"></span><span id="ciel-libelle"></span></div>
     <p id="phrase" role="status" aria-live="polite">Recherche de votre position…</p>
+    <p id="cumuls"></p>
     <p id="detail"></p>
   </header>
+
+  <div id="alerte-grele" class="verre alerte" role="alert" hidden></div>
 
   <div id="sans-gps" class="verre carte-msg" hidden>
     <p id="sans-gps-texte"></p>
@@ -69,6 +74,17 @@
     </table>
   </details>
 
+  <details id="fiabilite" class="verre">
+    <summary>Fiabilité de la prévision</summary>
+    <p id="fiab-texte">Chargement…</p>
+    <table id="fiab-table" hidden>
+      <thead><tr><th>Échéance</th><th>Vérif.</th><th>Score</th><th>Persist.</th><th>Gain</th><th>Détect.</th><th>Fausses</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p class="note">Score de Brier : plus bas = mieux (0 = parfait). Gain : par rapport à « il pleuvra comme maintenant ».
+      Détection : part des pluies annoncées à 50 % ou plus. Fausses : part des annonces sans pluie.</p>
+  </details>
+
   <section class="verre reglages" aria-label="Réglages">
     <label><input type="checkbox" id="o-fleches"> Flèches de déplacement sur la carte</label>
     <label><input type="checkbox" id="o-cellules" checked> Averses fortes suivies</label>
@@ -79,6 +95,7 @@
       </select>
       de risque d'ici 30 min
     </label>
+    <label class="seuil"><input type="checkbox" id="o-fin"> et quand la pluie va s'arrêter</label>
   </section>
   <p class="sources">Radar <a href="https://www.rainviewer.com">RainViewer</a> · AROME et ciel <a href="https://open-meteo.com">Open-Meteo</a> ·
     fond de carte <a href="https://www.openstreetmap.org/copyright">© OpenStreetMap</a>. Probabilités calculées ici à partir des images

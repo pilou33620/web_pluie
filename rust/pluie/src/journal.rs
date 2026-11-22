@@ -5,10 +5,12 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
+use crate::calibration::Calibration;
 use crate::radar::{Domaine, Grille, SEUIL_DBZ};
 
 /// Échéances vérifiées (minutes après l'image) : une image radar toutes les 10 min.
@@ -100,9 +102,8 @@ struct Somme {
     fausses: u32,
 }
 
-/// Le bilan des lignes du journal : scores de Brier par échéance (plus bas = mieux), gain sur la
-/// persistance, détection et fausses alertes au seuil de 50 %.
-pub fn bilan(texte: &str) -> String {
+/// Les sommes par échéance des lignes du journal.
+fn sommes(texte: &str) -> Vec<Somme> {
     let mut s: Vec<Somme> = ECHEANCES.iter().map(|_| Somme::default()).collect();
     for l in texte.lines() {
         let Ok(v) = serde_json::from_str::<Value>(l) else { continue };
@@ -125,6 +126,13 @@ pub fn bilan(texte: &str) -> String {
             _ => {}
         }
     }
+    s
+}
+
+/// Le bilan des lignes du journal : scores de Brier par échéance (plus bas = mieux), gain sur la
+/// persistance, détection et fausses alertes au seuil de 50 %.
+pub fn bilan(texte: &str) -> String {
+    let s = sommes(texte);
     let total: u32 = s.iter().map(|m| m.n).sum();
     if total == 0 {
         return "Aucune prévision vérifiée pour l'instant : le journal se remplit quand la page est ouverte.".into();
@@ -142,10 +150,55 @@ pub fn bilan(texte: &str) -> String {
     r + "gain : 1 − Brier / Brier de la persistance (positif = mieux que « il pleuvra comme maintenant »)."
 }
 
-/// Le bilan du journal sur disque (l'ancien fichier .1, puis le courant).
+/// Le même bilan en JSON, pour la page.
+pub fn bilan_json(texte: &str) -> Value {
+    let r = |x: f64| (x * 1000.0).round() / 1000.0;
+    let part = |a: u32, b: u32| (b > 0).then(|| r(a as f64 / b as f64));
+    let s = sommes(texte);
+    let echeances: Vec<Value> = s
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.n > 0)
+        .map(|(k, m)| {
+            let n = m.n as f64;
+            json!({"echeance": ECHEANCES[k], "n": m.n, "pluie": part(m.obs, m.n), "brier": r(m.b / n), "brier_radar": r(m.b_radar / n),
+                "brier_arome": (m.n_arome > 0).then(|| r(m.b_arome / m.n_arome as f64)), "brier_persist": r(m.b_persist / n),
+                "gain": (m.b_persist > 0.0).then(|| r(1.0 - m.b / m.b_persist)), "detection": part(m.touches, m.touches + m.rates),
+                "fausses": part(m.fausses, m.touches + m.fausses)})
+        })
+        .collect();
+    json!({"total": s.iter().map(|m| m.n).sum::<u32>(), "echeances": echeances})
+}
+
+/// Tout le journal sur disque : l'ancien fichier .1, puis le courant.
+fn lire_tout(f: &Path) -> String {
+    [f.with_extension("1.jsonl"), f.to_path_buf()].iter().filter_map(|c| std::fs::read_to_string(c).ok()).collect::<Vec<_>>().join("\n")
+}
+
 pub fn bilan_fichier(f: &Path) -> String {
-    let texte = [f.with_extension("1.jsonl"), f.to_path_buf()].iter().filter_map(|c| std::fs::read_to_string(c).ok()).collect::<Vec<_>>().join("\n");
-    format!("{}\n(journal : {})", bilan(&texte), f.display())
+    format!("{}\n(journal : {})", bilan(&lire_tout(f)), f.display())
+}
+
+/// Le réglage automatique des probabilités, relu dans le journal au plus une fois par heure
+/// (journal non posé, dans les essais : aucun réglage).
+pub fn calibration() -> Arc<Calibration> {
+    static GARDE: Mutex<Option<(Instant, Arc<Calibration>)>> = Mutex::new(None);
+    let mut g = GARDE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((quand, c)) = g.as_ref() {
+        if quand.elapsed() < Duration::from_secs(3600) {
+            return c.clone();
+        }
+    }
+    let c = Arc::new(FICHIER.get().map(|f| Calibration::depuis(&lire_tout(f))).unwrap_or_default());
+    *g = Some((Instant::now(), c.clone()));
+    c
+}
+
+/// La fiabilité pour la page : le bilan et le réglage en cours.
+pub fn fiabilite() -> Value {
+    let mut v = bilan_json(&FICHIER.get().map(|f| lire_tout(f)).unwrap_or_default());
+    v["reglage"] = calibration().resume();
+    v
 }
 
 #[cfg(test)]
@@ -194,5 +247,13 @@ mod essais {
         assert!(l10.contains(" 50%"), "pluie observée une fois sur deux : {l10}");
         let l30 = b.lines().find(|l| l.starts_with("30 min")).unwrap();
         assert!(l30.contains("100%"), "une fausse alerte sur une : {l30}");
+        let j = bilan_json(&texte);
+        assert_eq!(j["total"], 3);
+        assert_eq!(j["echeances"][0]["echeance"], 10);
+        assert_eq!(j["echeances"][0]["brier"], 0.025);
+        assert_eq!(j["echeances"][0]["gain"], 0.95);
+        assert_eq!(j["echeances"][0]["brier_arome"], 0.25);
+        assert_eq!(j["echeances"][1]["detection"], Value::Null, "aucune pluie observée à 30 min");
+        assert_eq!(j["echeances"][1]["fausses"], 1.0);
     }
 }

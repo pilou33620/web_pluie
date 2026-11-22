@@ -1,7 +1,8 @@
 //! Les sources externes, relayées et gardées en cache (repris de web_weather) :
 //!   - RainViewer (images radar des 2 dernières heures, toutes les 10 min) ;
 //!   - les tuiles OpenStreetMap (fond de carte, cache disque) ;
-//!   - Open-Meteo (AROME au pas de 15 min autour du point, et le ciel actuel pour le fond d'écran).
+//!   - Open-Meteo (AROME au pas de 15 min autour du point, et le ciel actuel pour le fond d'écran) ;
+//!   - l'API Adresse (nom de la commune, position arrondie à ~1 km).
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -20,6 +21,7 @@ pub const AGENT: &str = "web_pluie/1.0 (+https://github.com/pilou33620/web_pluie
 pub const OM: &str = "https://api.open-meteo.com/v1/forecast";
 pub const RAINVIEWER: &str = "https://api.rainviewer.com/public/weather-maps.json";
 pub const OSM: &str = "https://tile.openstreetmap.org";
+pub const BAN: &str = "https://api-adresse.data.gouv.fr/reverse/";
 
 pub const OSM_ZOOM_MAX: u32 = 13;
 const OSM_DUREE: u64 = 7 * 86400; // une tuile OSM gardée 7 jours
@@ -147,7 +149,7 @@ pub fn en_cache(cle: &str, duree: u64, calcul: impl FnOnce() -> Res<Valeur>) -> 
     Ok(valeur)
 }
 
-fn json_en_cache(cle: &str, duree: u64, calcul: impl FnOnce() -> Res<Value>) -> Res<Arc<Value>> {
+pub fn json_en_cache(cle: &str, duree: u64, calcul: impl FnOnce() -> Res<Value>) -> Res<Arc<Value>> {
     match en_cache(cle, duree, || calcul().map(|v| Valeur::Json(Arc::new(v))))? {
         Valeur::Json(v) => Ok(v),
         Valeur::Octets(_) => Err(Erreur::Format),
@@ -187,6 +189,28 @@ pub fn coordonnees(q: &str, pas: f64) -> Res<(f64, f64)> {
     }
     let a = |x: f64| arrondi((x / pas).round_ties_even() * pas, 4);
     Ok((a(lat), a(lon)))
+}
+
+/// Le déplacement envoyé par la page (`vitesse` en km/h, `cap` en degrés, 0 = nord) : None à
+/// l'arrêt (moins de 5 km/h) ou sans ces paramètres ; Parametre si l'un est hors bornes.
+pub fn deplacement(q: &str) -> Res<Option<(f64, f64)>> {
+    let lire = |n: &str| param(q, n).map(|v| v.trim().parse::<f64>().ok().filter(|x| x.is_finite()).ok_or(Erreur::Parametre)).transpose();
+    let (vitesse, cap) = (lire("vitesse")?, lire("cap")?);
+    let Some(v) = vitesse else { return Ok(None) };
+    if !(0.0..=250.0).contains(&v) || cap.is_some_and(|c| !(0.0..=360.0).contains(&c)) {
+        return Err(Erreur::Parametre);
+    }
+    Ok(match cap {
+        Some(c) if v >= 5.0 => Some((v, c)),
+        _ => None,
+    })
+}
+
+/// Le nom de la commune (API Adresse, France seulement), gardé 30 jours ; None ailleurs ou en panne.
+pub fn commune(lat: f64, lon: f64) -> Option<String> {
+    let (la, lo) = (arrondi(lat, 2).to_string(), arrondi(lon, 2).to_string());
+    let v = json_en_cache(&format!("commune|{la}|{lo}"), 30 * 86400, || json_de(BAN, &[("lat", la.as_str()), ("lon", lo.as_str())])).ok()?;
+    v.pointer("/features/0/properties/city").and_then(Value::as_str).map(String::from)
 }
 
 // --- Radar --------------------------------------------------------------------------
@@ -306,6 +330,17 @@ mod essais {
         assert_eq!(coordonnees("lat=44.84&lon=-0.66", 0.1), Ok((44.8, -0.7)));
         for q in ["", "lat=abc&lon=1", "lat=86&lon=0", "lat=0&lon=181", "lat=nan&lon=0", "lat=inf&lon=0"] {
             assert_eq!(coordonnees(q, 0.01), Err(Erreur::Parametre), "{q}");
+        }
+    }
+
+    #[test]
+    fn deplacements() {
+        assert_eq!(deplacement(""), Ok(None));
+        assert_eq!(deplacement("vitesse=45&cap=270"), Ok(Some((45.0, 270.0))));
+        assert_eq!(deplacement("vitesse=3&cap=270"), Ok(None), "à l'arrêt");
+        assert_eq!(deplacement("vitesse=45"), Ok(None), "sans cap");
+        for q in ["vitesse=abc&cap=1", "vitesse=45&cap=361", "vitesse=-1&cap=0", "vitesse=900&cap=0", "vitesse=inf&cap=0", "vitesse=45&cap=nan"] {
+            assert_eq!(deplacement(q), Err(Erreur::Parametre), "{q}");
         }
     }
 
